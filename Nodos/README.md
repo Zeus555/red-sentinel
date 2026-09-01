@@ -43,12 +43,12 @@ Otras IPs del ecosistema: `IpWheel=192.168.1.117` (nodo "Wheel" que sirve
 - Ubicación real: `~/Herramientas/WhatsApp_Checker/` en sentinel001 **y en
   sentinel005** (2 instancias = 2 números de WhatsApp distintos). Mismo código,
   cada una con su propio `auth_info_baileys/` (sesión independiente). En
-  sentinel005 el número es uno de Fanytel (VoIP) **13107744000**; Node.js se
+  sentinel005 el número es uno de Fanytel (VoIP) **1YYYYYYYYYY**; Node.js se
   instaló con `pkg install nodejs` (no venía). El número de sentinel001 es
-  **14088410157** (celular personal, solo checkNumberStatus).
+  **1XXXXXXXXXX** (celular personal, solo checkNumberStatus).
 - **sentinel005 corre la variante mejorada `whatsapp_chatbot/server.js`**
   (mirror en `whatsapp_chatbot/`) que combina el checker + un **chatbot de IA**
-  en la misma sesión de Baileys (13107744000). Detalles abajo.
+  en la misma sesión de Baileys (1YYYYYYYYYY). Detalles abajo.
 
 ### 1c. API del reloj `/watch/*` (sentinel001, alta 2026-08-26)
 
@@ -88,7 +88,7 @@ que el reloj pinte una bandeja unificada consultando dos APIs idénticas.
 ## Servicio 1b: Chatbot IA (sentinel005) — `whatsapp_chatbot/`
 
 - Extiende el checker: añade un handler `messages.upsert` que **solo responde a
-  `OWNER_NUMBER`** (14088410157, el celular personal) e ignora a todos los demás.
+  `OWNER_NUMBER`** (1XXXXXXXXXX, el celular personal) e ignora a todos los demás.
   Flujo: escribes desde tu celular al número Fanytel → el bot responde con IA.
 - **Gemini** (misma API key que `D:\PRC Indeed`, en `.env` con `chmod 600`,
   cargada por `node --env-file=.env`): `gemini-2.5-flash` con fallback a
@@ -119,7 +119,7 @@ que el reloj pinte una bandeja unificada consultando dos APIs idénticas.
 - Verificado (backend): estado de red, esquema de BD vacía, consulta SQL
   (`sqlite_version`→3.53.2) y checkNumberStatus, todo OK.
 - **GOTCHA LID**: WhatsApp entrega `msg.key.remoteJid` como **LID**
-  (`224644086931540@lid`), NO como `14088410157@s.whatsapp.net`. El filtro del
+  (`000000000000000@lid`), NO como `1XXXXXXXXXX@s.whatsapp.net`. El filtro del
   owner acepta `@lid` y `@s.whatsapp.net`; el LID del owner se resuelve al
   conectar con `sock.onWhatsApp(OWNER_NUMBER).lid` y hay respaldo `OWNER_LID`
   en el `.env`. Además se procesan los upsert type `append` (offline), no solo
@@ -279,7 +279,7 @@ que el reloj pinte una bandeja unificada consultando dos APIs idénticas.
   copiados de `~/PRC_Thermal/thermal-guard.conf`): resumen estado + nº de
   productos nuevos, y aviso inmediato por paso fallido. Mensajes en inglés.
 - **Dashboard público**: `https://extron.batchtoday.us` vía **Cloudflare Tunnel**
-  (`rpa-extron`, id 4f0a2058, servicio systemd de sistema `cloudflared`, config
+  (`rpa-extron`, id <TUNNEL-UUID>, servicio systemd de sistema `cloudflared`, config
   en `/etc/cloudflared/config.yml`, cert en `~/.cloudflared/`) → localhost:3008.
   **Copia local de la config y la unidad en [`cloudflared/`](cloudflared) desde
   2026-07-26** (la credencial del túnel NO se copió: es un secreto). El mismo
@@ -480,7 +480,7 @@ navegador  →  Cloudflare  →  cloudflared (batchtoday)  →  127.0.0.1:3014  
   punto y coma o Tab; Retroceso con el campo vacío quita la última; pegar
   «600111222, 600333444» crea una ficha por número. Máximo 20.
   - **Deduplica por los últimos 9 dígitos**, así que el mismo contacto en dos
-    formatos (`+14088410157` y `4088410157`) no se cuela dos veces ni se paga
+    formatos (`+1XXXXXXXXXX` y `XXXXXXXXXX`) no se cuela dos veces ni se paga
     dos veces.
   - La línea bajo las fichas dice **el coste real**: `N destinatarios × M
     segmentos = total SMS`. Con varios destinatarios es fácil no darse cuenta.

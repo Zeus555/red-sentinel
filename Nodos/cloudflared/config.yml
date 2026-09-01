@@ -1,5 +1,5 @@
-tunnel: 4f0a2058-2b9f-4f6e-9029-02c5ea22cf23
-credentials-file: /home/sentinel/.cloudflared/4f0a2058-2b9f-4f6e-9029-02c5ea22cf23.json
+tunnel: <TUNNEL-UUID>
+credentials-file: /home/sentinel/.cloudflared/<TUNNEL-UUID>.json
 
 ingress:
   - hostname: extron.batchtoday.us

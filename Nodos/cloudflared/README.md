@@ -31,7 +31,7 @@ propio Express (`DASH_USER`/`DASH_PASS` en el `.env` del RPA).
 ## Lo que NO está aquí, a propósito
 
 `config.yml` referencia
-`/home/sentinel/.cloudflared/4f0a2058-2b9f-4f6e-9029-02c5ea22cf23.json`.
+`/home/sentinel/.cloudflared/<TUNNEL-UUID>.json`.
 **Ese fichero es la credencial del túnel y no se copia a este disco.** Guardar
 credenciales en claro dentro de `D:\` es exactamente lo que se limpió en la
 Fase 1 del reordenamiento.
@@ -43,10 +43,10 @@ Cloudflare:
 
 ```bash
 cloudflared tunnel login
-cloudflared tunnel token --cred-file ~/.cloudflared/4f0a2058-....json rpa-extron
+cloudflared tunnel token --cred-file ~/.cloudflared/<TUNNEL-UUID>json rpa-extron
 ```
 
-El id del túnel (`4f0a2058-2b9f-4f6e-9029-02c5ea22cf23`) sí conviene tenerlo
+El id del túnel (`<TUNNEL-UUID>`) sí conviene tenerlo
 aquí: sin él no se sabe cuál de los túneles de la cuenta hay que recuperar.
 
 ## Restaurar

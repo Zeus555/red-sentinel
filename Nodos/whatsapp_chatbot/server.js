@@ -14,7 +14,7 @@ const PORT = process.env.PORT || 8002;
 
 // ---- Chatbot IA (Gemini) ----------------------------------------------------
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
-const OWNER_NUMBER = (process.env.OWNER_NUMBER || '14088410157').replace(/[^0-9]/g, '');
+const OWNER_NUMBER = (process.env.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
 const RQLITE_API = process.env.RQLITE_API || 'http://localhost:4001';
 
 // WhatsApp usa "LID" (@lid) para ocultar el numero real del remitente. Aceptamos
