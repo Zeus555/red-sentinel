@@ -1,0 +1,19 @@
+{
+  "name": "whatsapp_checker",
+  "version": "2.0.0",
+  "description": "WhatsApp Number Checker local service using pure WebSockets (@whiskeysockets/baileys)",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "type": "commonjs",
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.9",
+    "express": "^5.2.1",
+    "pino": "^9.6.0",
+    "qrcode": "^1.5.4"
+  }
+}

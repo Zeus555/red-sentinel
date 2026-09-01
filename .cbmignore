@@ -1,0 +1,15 @@
+# Exclusiones del indice de codigo (codebase-memory). No afecta a git ni a nada mas.
+
+# Driver Realtek vendorizado dentro del archivo historico: 1.240 ficheros .c/.h
+# que por si solos generaban 163.952 macros, el 77 % del grafo, sin ninguna
+# relacion con Sentinel. El resto de Wheel/OLD si se indexa: son las 88 fuentes
+# awk/sh/sql de las versiones anteriores.
+Wheel/OLD/PYT Router/
+
+# Salidas de ejecucion, no fuente.
+Log/
+Temporal/
+*.log
+*.tmp
+*.db
+*.status

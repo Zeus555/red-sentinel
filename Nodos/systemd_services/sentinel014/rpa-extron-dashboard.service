@@ -1,0 +1,14 @@
+[Unit]
+Description=RPA Monitor Extron - dashboard web
+After=network-online.target
+
+[Service]
+WorkingDirectory=%h/RPA_Monitor_Extron
+ExecStart=%h/.nvm/versions/node/v20.20.2/bin/node Script/dashboard.js
+Environment=NODE_ENV=production
+Environment=PORT=3008
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=default.target

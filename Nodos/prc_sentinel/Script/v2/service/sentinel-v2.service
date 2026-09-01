@@ -1,0 +1,23 @@
+[Unit]
+# Sentinel v2 - Unidad systemd de USUARIO para los nodos Ubuntu (sentinel014,
+# sentinel016). Se instala en ~/.config/systemd/user/sentinel-v2.service.
+# Requiere linger habilitado (ya lo esta para rqlited):
+#   sudo loginctl enable-linger sentinel
+Description=Sentinel v2 (agente HTTP en gawk, un solo puerto)
+After=network-online.target
+
+[Service]
+Type=simple
+# Se llama al MISMO lanzador que usa runit en los telefonos, en vez de invocar
+# gawk directamente con EnvironmentFile. Con EnvironmentFile systemd no leia
+# fleet.token (el servicio arrancaba con TOKEN vacio = nodo abierto a la LAN) y
+# ademas metia los comentarios en linea dentro de los valores.
+ExecStart=/bin/sh %h/PRC_Sentinel/v2/sentinel-start.sh
+WorkingDirectory=%h/PRC_Sentinel/v2
+Restart=always
+RestartSec=5
+# NO se pone MemoryMax: en systemd limita el cgroup ENTERO (aceptador + workers
+# + sqlite3), asi que una tarea pesada mataria el servicio entero, no al worker.
+
+[Install]
+WantedBy=default.target

@@ -1,0 +1,9 @@
+tunnel: 4f0a2058-2b9f-4f6e-9029-02c5ea22cf23
+credentials-file: /home/sentinel/.cloudflared/4f0a2058-2b9f-4f6e-9029-02c5ea22cf23.json
+
+ingress:
+  - hostname: extron.batchtoday.us
+    service: http://localhost:3008
+  - hostname: ampronix.batchtoday.us
+    service: http://192.168.1.117:3013
+  - service: http_status:404

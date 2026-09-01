@@ -1,0 +1,7 @@
+[Unit]
+Description=Sentinel v2 - revisar la flota cada 5 min y avisar de caidas
+[Timer]
+OnBootSec=4min
+OnUnitActiveSec=5min
+[Install]
+WantedBy=timers.target

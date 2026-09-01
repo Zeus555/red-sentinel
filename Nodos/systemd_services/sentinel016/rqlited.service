@@ -1,0 +1,12 @@
+[Unit]
+Description=rqlite node7 Service
+After=network.target
+
+[Service]
+Type=simple
+ExecStart=/home/sentinel/go/bin/rqlited -node-id node7 -http-addr 0.0.0.0:4001 -http-adv-addr 192.168.1.91:4001 -raft-addr 0.0.0.0:4002 -raft-adv-addr 192.168.1.91:4002 -join 192.168.1.69:4002,192.168.1.252:4002,192.168.1.190:4002 /home/sentinel/rqlite-data
+Restart=on-failure
+RestartSec=5
+
+[Install]
+WantedBy=default.target

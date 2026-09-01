@@ -1,0 +1,5 @@
+[Unit]
+Description=Sentinel v2 - vigilante de salud (una pasada)
+[Service]
+Type=oneshot
+ExecStart=/bin/sh %h/PRC_Sentinel/v2/watchdog.sh

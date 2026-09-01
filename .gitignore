@@ -1,0 +1,87 @@
+# =====================================================================
+# RED Sentinel - .gitignore del primer commit (2026-09-01)
+# Regla del repo: se versiona CODIGO (gawk/sh/js/bat/awk/sql), configs
+# de ejemplo, unidades de servicio y DOCUMENTACION. Quedan fuera:
+# secretos/PKI, datos, logs, temporales y el archivo historico Wheel/OLD.
+# El codigo real corre en los nodos; esto se despliega por scp.
+# =====================================================================
+
+# --- Material criptografico y secretos (PKI/mTLS, tokens de flota) ---
+# Incluye las llaves y certs de prueba de Wheel/Script/v2/_test/Certs
+# y los fleet.token del selftest. Los .crt/.pem publicos tambien se
+# excluyen por precaucion.
+*.key
+*.pem
+*.crt
+*.p12
+*.csr
+*.srl
+*.token
+fleet.token
+Wheel/Script/v2/_test/
+
+# --- Llaves y accesos SSH (no hay en el arbol; cinturon y tirantes) ---
+id_rsa*
+id_ed25519*
+id_ecdsa*
+known_hosts
+authorized_keys
+
+# --- Sesiones y credenciales de servicios satelite ---
+# Baileys (WhatsApp), Telegram MTProto, tokens de reloj: viven SOLO en
+# los nodos, nunca deben entrar aqui.
+auth_info*/
+creds.json
+*session*
+watch_token.txt
+# .env reales fuera; los .env.example de referencia si se versionan.
+.env
+.env.*
+!.env.example
+# Credenciales del tunel Cloudflare (el .json vive en sentinel014).
+Nodos/cloudflared/*.json
+# API key de xAI (Grok) hardcodeada (hallada en la auditoria del primer
+# commit, 2026-09-01). El script queda en disco; fuera del repo hasta que
+# lea la clave de un fichero/variable de entorno.
+UserAgent/Script/Prompt_GetSpec_Grok.bat
+
+# --- Archivo historico muerto (ver HISTORIA_CRIPTO.md antes de tocar) ---
+# 366 MB / 2.419 ficheros congelados desde 2024: copias de nodos viejos,
+# driver Realtek vendorizado y confs de router con contrasenas WiFi
+# (hostapd_*.conf), mas el .out de 246 MB que supera el limite de GitHub.
+Wheel/OLD/
+RouteController.cpp
+*.bak-*
+Wheel/Script/Sentinel-Server 20241118.awk
+Wheel/Script/rt=8081
+
+# --- Datos y ficheros pesados (bases vivas del nodo, no fuente) ---
+# Banderas de ejecucion del nodo Wheel (estado runtime, no fuente).
+Wheel/Run/
+*.db
+*.db-journal
+*.sqlite
+*.sqlite3
+Log/
+logs/
+Temporal/
+*.log
+*.tmp
+*.out
+*.state
+*.state.*
+*.status
+node_modules/
+# Binarios de rqlite si alguna vez se descargan al arbol.
+rqlited
+rqlited.exe
+rqlite-v*/
+
+# --- Documentos de negocio (no codigo) ---
+Sentinel_Escalado_Costos.xlsx
+Sentinel_Recepcionista_IA_CapEx.xlsx
+
+# --- Basura de SO ---
+Thumbs.db
+.DS_Store
+desktop.ini

@@ -1,0 +1,9 @@
+{
+  "name": "telegram_bridge",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Puente Telegram (MTProto) para el reloj — flota Sentinel",
+  "main": "server.js",
+  "type": "commonjs",
+  "scripts": { "start": "node server.js" }
+}

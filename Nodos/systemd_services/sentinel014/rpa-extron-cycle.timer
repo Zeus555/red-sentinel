@@ -1,0 +1,10 @@
+[Unit]
+Description=RPA Monitor Extron 2x/dia (06:00 y 18:00 hora local del nodo)
+
+[Timer]
+OnCalendar=*-*-* 06,18:00:00
+Persistent=true
+RandomizedDelaySec=300
+
+[Install]
+WantedBy=timers.target

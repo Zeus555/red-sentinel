@@ -1,0 +1,67 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Galería de Fotos</title>
+    <style>
+        .gallery {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+        }
+        .gallery img {
+            width: 150px;
+            height: 100px;
+            object-fit: cover;
+        }
+        #pageInput {
+            display: none;
+            position: fixed;
+            top: 10px;
+            left: 10px;
+        }
+    </style>
+</head>
+<body>
+    <div class="gallery">
+        <img src="https://cdn.marvel.com/content/1x/avengersendgame_lob_crd_05.jpg" alt="Imagen 1">
+        <img src="https://cdn.marvel.com/content/1x/avengersendgame_lob_crd_05.jpg" alt="Imagen 2">
+        <img src="https://cdn.marvel.com/content/1x/avengersendgame_lob_crd_05.jpg" alt="Imagen 3">
+        <!-- Agrega más imágenes aquí -->
+    </div>
+    <input type="number" id="pageInput" placeholder="Número de página">
+
+    <script>
+        const pageInput = document.getElementById('pageInput');
+        let touchTimer;
+
+        document.addEventListener('touchstart', (event) => {
+            touchTimer = setTimeout(() => {
+                pageInput.style.display = 'block';
+                pageInput.focus();
+            }, 2000); // 2 segundos
+        });
+
+        document.addEventListener('touchend', (event) => {
+            //clearTimeout(touchTimer);
+        });
+
+        pageInput.addEventListener('blur', () => {
+            pageInput.style.display = 'none';
+        });
+
+        pageInput.addEventListener('keydown', (event) => {
+            if (event.key === 'Enter') {
+                pageInput.style.display = 'none';
+            }
+        });
+
+        pageInput.addEventListener('change', () => {
+            const pageNumber = pageInput.value;
+            // Aquí puedes agregar la lógica para navegar a la página correspondiente
+            console.log(`Navegar a la página: ${pageNumber}`);
+        });
+    </script>
+</body>
+</html>

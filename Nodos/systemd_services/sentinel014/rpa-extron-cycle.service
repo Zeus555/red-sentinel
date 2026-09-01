@@ -1,0 +1,11 @@
+[Unit]
+Description=RPA Monitor Extron - ciclo completo (scrape nuevos, descargas, notificacion, IA, sync Gurus)
+After=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/RPA_Monitor_Extron
+ExecStart=%h/.nvm/versions/node/v20.20.2/bin/node Script/cycle.js
+Environment=NODE_ENV=production
+# Un lote grande de productos nuevos puede tardar horas (delays + reconexiones BRD)
+TimeoutStartSec=6h

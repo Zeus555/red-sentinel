@@ -1,0 +1,22 @@
+[Unit]
+# Sentinel v2 - Terminador mTLS (stunnel) para los nodos Ubuntu.
+# Se instala en ~/.config/systemd/user/sentinel-v2-tls.service.
+#
+# stunnel se instala con apt y eso EXIGE root: si el usuario no tiene sudo sin
+# contrasena, hay que instalarlo a mano antes de habilitar esta unidad:
+#   sudo apt-get install stunnel4
+Description=Sentinel v2 - terminador mTLS (stunnel)
+After=network-online.target sentinel-v2.service
+Wants=sentinel-v2.service
+
+[Service]
+Type=simple
+ExecStart=/bin/sh %h/PRC_Sentinel/v2/sentinel-tls-start.sh
+WorkingDirectory=%h/PRC_Sentinel/v2
+Restart=always
+# Espera larga entre reintentos: si falta stunnel, insistir cada pocos segundos
+# solo gasta CPU. Al instalarlo, la unidad entra sola en el siguiente ciclo.
+RestartSec=60
+
+[Install]
+WantedBy=default.target

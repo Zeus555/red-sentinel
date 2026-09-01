@@ -1,0 +1,147 @@
+# Sentinel v2 - Configuracion por nodo.
+# Se instala como ~/PRC_Sentinel/v2/sentinel.conf con permisos 600 (lleva el token).
+# Lo leen tanto el servicio (runit/systemd) como los scripts de mantenimiento.
+
+# Identidad. NAME debe casar con el hostname SSH y con el NODE_MAP del chatbot.
+NAME=sentinel0NN
+# ROLE: 'Super' SOLO en el Wheel (la laptop). Cambia lo que responde /version.
+ROLE=Nodo
+
+# Puertos. Deliberadamente FUERA del rango del v1 (8081-8100): si alguien
+# reactivara el watchdog del v1, sus clones y el v2 nunca competirian por un
+# socket. El 8443 es la entrada mTLS que atiende stunnel.
+PORT=8181
+TLS_PORT=8443
+
+# Secreto compartido de la flota. OBLIGATORIO: gawk solo sabe atar 0.0.0.0, asi
+# que el backend es alcanzable sin pasar por stunnel y esto es lo unico que lo
+# protege. Generar con:  openssl rand -hex 24
+TOKEN=CAMBIAME
+
+# Concurrencia. En telefonos modestos conviene 4; sentinel001 ya arrastra load
+# average alto de por si.
+MAXJOBS=4
+MAXQUEUE=64
+# JOBTTL: segundos antes de dar por muerto un worker que no reporta.
+JOBTTL=300
+# SPOOLTTL: segundos antes de purgar ficheros del spool.
+SPOOLTTL=86400
+
+# Bases de datos (opcionales; si faltan, /ingest/* responde 400 y nada mas).
+DBHOT=
+DBSIM=
+
+# Descubrimiento. Vacio = deducir la red del sistema.
+CIDR=
+RQLITE=http://127.0.0.1:4001
+GOSSIP=
+
+# Eleccion de Wheel (coordinador). La red lo elige sola por aptitud: gana el nodo
+# con mas disponibilidad (tiempo en pie y sin bateria pesan mas que la potencia).
+# Poner 'no' en equipos que no deban coordinar nunca, como la laptop, que se
+# apaga a diario.
+WHEEL_ELIGIBLE=yes
+# Cada cuantos segundos se revisa la eleccion.
+# El aceptador NO dispara la eleccion (0 = desactivado): la lanza cron/timer,
+# porque hacerlo desde su propio bucle mataba el servicio en los telefonos.
+ELECTSECS=0
+
+# Nodos a vigilar que NO estan en el cluster rqlite (la lista de vigilancia sale
+# de ahi). La laptop pertenece a la red Sentinel pero no guarda la BD, asi que
+# hay que nombrarla aqui. Separar por comas. Debe estar en TODOS los nodos:
+# cualquiera puede acabar siendo el Wheel y, por tanto, el que vigila.
+EXTRA_NODES=192.168.1.117
+
+# Nodos que pertenecen a la red pero NO se vigilan. El movil personal entra y sale
+# de la WiFi a diario: avisar de cada desconexion seria ruido constante. Separar
+# por comas. Como EXTRA_NODES, debe estar en TODOS los nodos.
+SKIP_NODES=192.168.1.210
+
+# Tolerancia antes de dar por caido un nodo, en formato ip:segundos (comas para
+# separar varios). La laptop se reinicia una vez por semana y no tiene sentido
+# avisar de eso; 1800 = 30 min, que cubre de sobra un reinicio con actualizaciones
+# y sigue avisando de una caida real dentro de la media hora. Sin entrada aqui,
+# un nodo se declara caido en cuanto falla el sondeo (que es lo que se quiere para
+# los que estan siempre encendidos).
+GRACE_NODES=192.168.1.117:1800
+
+# >>> nodo movil (roaming) >>>
+# SOLO para equipos que cambian de red a diario: hoy sentinel019, el movil
+# personal. Dejar VACIO en los nodos fijos — sin ROAM_SEED, Sentinel-Roam.sh sale
+# sin hacer nada, asi que el fichero puede repartirse igual a toda la flota.
+#
+# El problema que resuelve: fuera de casa el telefono queda tras el CGNAT del
+# operador y nadie puede abrirle una conexion, pero TODA la red Sentinel funciona
+# por sondeo entrante. La malla WireGuard le da una IP fija que vale en las dos
+# redes (ver ROAMING_sentinel019.md); esto se ocupa de lo otro: que rqlite no
+# replique Raft sobre datos moviles.
+#
+# ROAM_SEED: IP de LAN de un nodo siempre encendido. Es la prueba de "estoy en
+# casa": si responde, se esta en la WiFi domestica. Se comprueba alcanzandolo de
+# verdad y no mirando interfaces, porque en Android 10+ `ip addr`, `netstat` y
+# `ps` mienten a las apps sin privilegios. Poner el nodo semilla del cluster.
+ROAM_SEED=
+# Servicio que se para al salir de casa y se levanta al volver.
+ROAM_SVC=rqlited
+# Pasadas seguidas viendo el mismo sitio antes de mover nada. A 5 min por pasada,
+# 2 son 10 min: absorbe un ascensor o un cambio de piso sin dar de baja el nodo.
+ROAM_CONFIRMA=2
+# A donde mandar la telemetria de bateria cuando el rqlite local esta parado.
+# Lo lee Sentinel-Bateria.sh. Vacio = solo al local, que es lo de siempre.
+RQLITE_FALLBACK=
+# <<< nodo movil (roaming) <<<
+
+# Aviso de bateria (solo nodos Termux; la telemetria la escribe Sentinel-Bateria.sh).
+# Se avisa cuando un equipo ENCHUFADO pierde carga: es el fallo que mato a
+# sentinel017 (Android corta la carga por encima de ~42 C y el movil tira de
+# bateria hasta agotarse, sin que el aviso termico de 45 C llegue a saltar).
+# Puntos de bateria perdidos en 2 h que disparan el aviso:
+BAT_CAIDA_PCT=5
+# Suelo absoluto estando enchufado:
+BAT_MIN_PCT=30
+
+# Precio de criptomonedas (lo ejecuta SOLO el Wheel; los demas salen sin hacer nada).
+# Pares separados por comas, tal como los nombra la API de Coinbase.
+CRIPTO_PARES=BTC-USD
+# Cada cuantos segundos se muestrea (el instante se redondea a este paso y forma
+# parte de la clave, para que un relevo de Wheel no duplique filas).
+CRIPTO_SEGUNDOS=10
+# Dias de historico que se conservan. A 10 s son 8.640 filas/dia: 90 dias son
+# ~125 MB, y el limite real de la red es el nodo con MENOS disco libre, porque
+# rqlite replica la base entera en todos.
+CRIPTO_RETENCION_DIAS=90
+# Nodos que recolectan ADEMAS del Wheel. Dos a la vez a proposito: si uno se
+# atasca unos segundos, el otro ya tiene la muestra y no queda hueco. No duplica
+# filas porque la clave es (par, exchange, instante redondeado) con OR IGNORE.
+CRIPTO_NODOS=sentinel014,sentinel016
+
+
+# >>> libro de ordenes >>>
+# Sentinel-Libro.sh: tope del libro de Coinbase (mejor bid/ask con tamano y
+# numero de ordenes), en la MISMA rejilla de 10 s que cripto_precio para poder
+# cruzar ambas series por `ts`. La fuente es la API propia en AWS, que consulta
+# api.exchange.coinbase.com/products/<PAR>/book?level=1.
+LIBRO_URL=https://batchtoday.us/price
+LIBRO_PAR=BTC-USD
+LIBRO_EXCHANGE=coinbase
+# <<< libro de ordenes <<<
+# >>> zona horaria de la flota >>>
+# Se fija aqui, y no en el ajuste de cada aparato, porque la flota mezcla Ubuntu,
+# Termux y tablets Fire y cada familia se configura distinto: sentinel016 corria
+# en UTC (7 h de desfase) y dos tablets Amazon IDENTICAS acabaron en
+# America/Denver (1 h). El sintoma desconcertaba: las horas que devolvia la BD
+# cambiaban segun que nodo fuese lider de rqlite en ese momento.
+#
+# Va EXPORTADA a proposito. Los scripts hacen `source` de este fichero y `date`
+# es un proceso hijo: con un simple TZ=... no la heredaria.
+#
+# NO afecta a los datos. Todo lo que se guarda usa epoch (date +%s), que es
+# independiente de la zona; esto solo cambia como se LEEN las horas en logs,
+# alertas y consultas.
+# EXCEPCION Windows/git-bash: no trae /usr/share/zoneinfo, asi que el nombre
+# largo cae SILENCIOSAMENTE a GMT. En la laptop se usa la forma POSIX, que la
+# libc resuelve sin ficheros y da el mismo resultado:
+#   TZ=PST8PDT,M3.2.0,M11.1.0
+TZ=America/Los_Angeles
+export TZ
+# <<< zona horaria de la flota <<<

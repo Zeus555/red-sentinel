@@ -1,0 +1,19 @@
+# Mirror de ~/PRC_Thermal/thermal-guard.conf (chmod 600 en el nodo).
+# El archivo real lleva las credenciales del bot de Telegram — NO se versiona.
+#
+# Al dar de alta un nodo, copiarlo desde otro nodo. OJO CON EL scp: sin -p el
+# fichero se crea con la umask del DESTINO, no con los permisos del origen. Por
+# eso los Termux salian 600 (umask 077) y los Ubuntu 664 (umask 002), dejando el
+# token del bot legible por todo el grupo. El chmod final es el cinturon: no
+# depende de la umask de nadie.
+#   scp -p sentinel018:~/PRC_Thermal/thermal-guard.conf sentinel0NN:~/PRC_Thermal/
+#   ssh sentinel0NN 'chmod 600 ~/PRC_Thermal/thermal-guard.conf'
+BOT_TOKEN=<token del bot de alertas rqlite>
+CHAT_ID=<id del grupo de alertas>
+WARN=45
+CRIT=50
+EMERG=55
+REARM=42
+MINGAP=900
+DISK_WARN_PCT=10
+DISK_CRIT_PCT=5
