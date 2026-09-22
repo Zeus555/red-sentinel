@@ -9,6 +9,11 @@ teléfonos que Android apaga, congela y desconecta a voluntad. Este repositorio
 reúne el código, la configuración de ejemplo y la documentación del sistema;
 el código real corre en los nodos y se despliega por `scp`.
 
+A esos 12 se suma **sentinel020** (192.168.1.99), un Windows 11 que no es nodo
+rqlite ni se vigila con el resto: es el caballo de carga donde se concentran los
+cinco **RPA Monitor** (LG, Sony, Barco, Extron y Eizo), con el Programador de
+tareas en lugar de PM2. Ver [Servicio 8](Nodos/README.md#servicio-8-rpa-monitor-en-sentinel020).
+
 Las piezas del sistema Sentinel, reunidas el **2026-07-26**. Antes vivían
 dispersas y sin relación aparente: `D:\PRC Sentinel` y `D:\PRC User Agent` en la
 raíz, y `D:\Herramientas\Sentinel_Infra` metida entre herramientas de terceros.

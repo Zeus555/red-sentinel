@@ -5,6 +5,8 @@ Internet sin abrir un solo puerto en el router. Corre en **sentinel014**
 (node6, 192.168.1.250) como servicio systemd **de sistema**, no de usuario.
 
 Rescatado el **2026-07-26**. Antes vivía solo en el nodo.
+**Reconciliado con el nodo el 2026-09-22**: el `config.yml` de este espejo se
+había quedado en la versión de julio y ya no describía a dónde iba el tráfico.
 
 | Fichero | Origen en el nodo |
 |---|---|
@@ -15,14 +17,30 @@ Rescatado el **2026-07-26**. Antes vivía solo en el nodo.
 
 | Hostname | Va a | Qué es |
 |---|---|---|
-| `extron.batchtoday.us` | `http://localhost:3008` | dashboard de RPA Monitor Extron, en el propio nodo |
-| `ampronix.batchtoday.us` | `http://192.168.1.117:3013` | dashboard de Ampronix — **corre en la laptop**, no aquí |
+| `extron.batchtoday.us` | `http://192.168.1.99:3008` | dashboard de RPA Monitor Extron, **en sentinel020** |
+| `ampronix.batchtoday.us` + `path: ^/api/agent/` | `http://192.168.1.99:3013` | solo la API del agente de Ampronix, **en sentinel020** |
+| `ampronix.batchtoday.us` (resto) | `http_status:404` | segunda barrera (decisión de 2026-09-16) |
 | (resto) | `http_status:404` | catch-all obligatorio |
 
-La segunda regla es la que sorprende: sentinel014 hace de **puerta de entrada
-de la laptop**. Si este nodo se apaga, `ampronix.batchtoday.us` cae aunque
-`rpa-ampronix-services-dashboard` siga corriendo perfectamente en pm2. Y si la laptop cambia
-de IP en la LAN, hay que editar este `config.yml`, no nada del lado de Windows.
+**Ninguno de los dos destinos vive ya en sentinel014.** Los dos apuntan a
+sentinel020 (192.168.1.99), que es donde se concentran los RPA Monitor — ver
+[Servicio 8](../README.md#servicio-8-rpa-monitor-en-sentinel020). sentinel014 se
+quedó únicamente como **puerta de entrada**: solo corre el `cloudflared`, no
+sirve ninguno de los dos dashboards. Si este nodo se apaga, ambos hostnames caen
+aunque los paneles sigan perfectamente vivos en sentinel020. Y si sentinel020
+cambia de IP en la LAN, hay que editar este `config.yml`, no nada del lado de
+Windows.
+
+La regla de Ampronix tiene dos entradas por orden: la de `path` primero, y el
+`http_status:404` después para el resto del hostname. Invertirlas dejaría la API
+inalcanzable.
+
+**Verificado en vivo el 2026-09-22:** `cloudflared` `active` en sentinel014;
+`https://extron.batchtoday.us` responde **401** con
+`www-authenticate: Basic realm="RPA Extron"` y `x-powered-by: Express` (o sea, la
+petición llega al Express real); `https://ampronix.batchtoday.us/` responde
+**404**, que es el comportamiento buscado. En sentinel014 no escucha nada en
+3008; en sentinel020 sí, junto con 3013.
 
 El túnel es saliente, así que es inmune a los cambios de IP residencial. La
 autenticación de los dashboards no la hace Cloudflare: es Basic Auth dentro del

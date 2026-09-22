@@ -3,7 +3,12 @@ credentials-file: /home/sentinel/.cloudflared/<TUNNEL-UUID>.json
 
 ingress:
   - hostname: extron.batchtoday.us
-    service: http://localhost:3008
+    service: http://192.168.1.99:3008
+  # Ampronix: desde internet SOLO la API del agente (decision de Ariel, 2026-09-16).
+  # El panel ya devuelve 404 al resto; esta es la segunda barrera.
   - hostname: ampronix.batchtoday.us
-    service: http://192.168.1.117:3013
+    path: ^/api/agent/
+    service: http://192.168.1.99:3013
+  - hostname: ampronix.batchtoday.us
+    service: http_status:404
   - service: http_status:404

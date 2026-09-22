@@ -12,26 +12,48 @@ Alta de sentinel019 / node11: 2026-07-24 (clúster verificado en vivo: 11 nodos)
 
 ## Flota / mapeo de nodos
 
-Todos son teléfonos Android con Termux, usuario `sentinel`, SSH puerto **8022**
-(configurados en `~/.ssh/config` de la laptop). sentinel001 es un Samsung
-Galaxy (aarch64, kernel abA125USQS9CXJ4).
+Todos son teléfonos o tablets Android con Termux, usuario `sentinel`, SSH puerto
+**8022** (configurados en `~/.ssh/config` de la laptop). La columna **Modelo**
+sale de `getprop ro.product.model` preguntado **en vivo a cada equipo el
+2026-09-16**, no de suposiciones. Los tres nodos que no respondieron ese día
+quedan como *sin determinar*: sondearlos cuando vuelvan con
+`ssh <nodo> 'getprop ro.product.model; getprop ro.product.manufacturer'`.
 
-| Host SSH    | IP LAN         | rqlite node-id | Rol extra                        |
-|-------------|----------------|----------------|----------------------------------|
-| sentinel001 | 192.168.1.69   | node1          | WhatsApp_Checker + API del reloj (:8002), Puente Telegram (:8003), PRC_Sentinel (:8081-8100) |
-| sentinel002 | 192.168.1.65   | node9          | Android/Termux (aarch64), unido 2026-07-17 |
-| sentinel003 | 192.168.1.94   | node2          |                                  |
-| sentinel005 | 192.168.1.252  | node3          |                                  |
-| sentinel009 | 192.168.1.124  | node4          |                                  |
-| sentinel010 | 192.168.1.190  | node5          | líder rqlite habitual            |
-| sentinel014 | 192.168.1.250  | node6          | rqlite en Ubuntu 24.04 (systemd user), **RPA Monitor Extron** (ciclo 2×/día + dashboard :3008) |
-| sentinel016 | 192.168.1.91   | node7          | rqlite en Ubuntu 24.04 (systemd user), prc-agent-jupiter (Docker, wallet Phantom) |
-| sentinel017 | 192.168.1.212  | node8          | Android/Termux (aarch64), unido 2026-07-17 |
-| sentinel018 | 192.168.1.211  | node10         | detectado en auditoría remota 2026-07-21 (reporta telemetría battery) |
-| sentinel019 | 192.168.1.210  | node11         | Pixel 6 (Android 17, aarch64), celular personal, unido 2026-07-24. Backend **Sentinel SMS** (:8010, solo loopback, pm2) |
+| Host SSH    | IP LAN         | rqlite node-id | Modelo (SoC / SO)                | Rol extra                        |
+|-------------|----------------|----------------|----------------------------------|----------------------------------|
+| sentinel001 | 192.168.1.69   | node1          | Samsung Galaxy A12 `SM-A125U` (MediaTek Helio P35 / MT6765, Android 12) | WhatsApp_Checker + API del reloj (:8002), Puente Telegram (:8003), PRC_Sentinel (:8081-8100) |
+| sentinel002 | 192.168.1.65   | node9          | OnePlus Nord N100 `BE2015`, variante Metro (Snapdragon 460 / bengal, Android 11) | unido 2026-07-17 |
+| sentinel003 | 192.168.1.94   | node2          | Samsung Galaxy A14 `SM-A145P` / `a14m` (MediaTek Helio G80 / MT6768, Android 15) | tope de carga ~80 % |
+| sentinel005 | 192.168.1.252  | node3          | T-Mobile REVVL V+ 5G `Sprout`, de Wingtech (Dimensity 700 / MT6833, Android 12) |                                  |
+| sentinel009 | 192.168.1.124  | node4          | Amazon Fire HD 8 12.ª gen `KFRAWI` / `raspite` (MT8169, Fire OS 8.3.3.8) | gemela física de 010 |
+| sentinel010 | 192.168.1.190  | node5          | Amazon Fire HD 8 12.ª gen `KFRAWI` / `raspite` (MT8169, Fire OS 8.3.3.8) | líder rqlite habitual · gemela física de 009 |
+| sentinel014 | 192.168.1.250  | node6          | — no es teléfono (Ubuntu 24.04)  | rqlite en Ubuntu 24.04 (systemd user), **RPA Monitor Extron** (ciclo 2×/día + dashboard :3008) |
+| sentinel016 | 192.168.1.91   | node7          | — no es teléfono (Ubuntu 24.04)  | rqlite en Ubuntu 24.04 (systemd user), prc-agent-jupiter (Docker, wallet Phantom) |
+| sentinel017 | 192.168.1.212  | node8          | Motorola moto g play 2024 `fogona` (Qualcomm Snapdragon, plataforma `bengal`, Android 14) | unido 2026-07-17 |
+| sentinel018 | 192.168.1.211  | node10         | Samsung Galaxy A20 `SM-A205U` / `a20p` (Samsung Exynos 7904, Android 10) | detectado en auditoría remota 2026-07-21 (reporta telemetría battery) |
+| sentinel019 | 192.168.1.210  | node11         | Google Pixel 6 (Tensor, Android 17, aarch64) | celular personal, unido 2026-07-24. Backend **Sentinel SMS** (:8010, solo loopback, pm2) |
+
+**Bypass de batería: ninguno lo soporta** (comprobado 2026-09-16). Ningún modelo
+lo trae de fábrica —es cosa de móviles gaming—, **no hay root en ningún nodo**
+(el `su` del PATH es el stub de Termux, responde "No su program found") y SELinux
+bloquea `/sys/class/power_supply/` en los cinco equipos alcanzables. Las Fire HD
+son las únicas que exponen el interruptor correcto, `en_power_path` bajo
+`/proc/mtk_battery_cmd/` (el power-path de MediaTek), y es solo-root. El único
+candidato posible sería el Pixel 6 por tener bootloader desbloqueable, y es
+justo el móvil personal que viaja. OJO: `settings list global|secure` **no sirve**
+para auditar topes de carga desde Termux — lanza SecurityException por
+INTERACT_ACROSS_USERS y devuelve vacío, que parece un "no existe" y no lo es.
 
 La laptop se llama **sentinel013** y no es nodo rqlite: corre el pm2 con 16 apps
-(dashboards RPA en 3001-3013) y ahora el panel Sentinel SMS en 3014.
+(dashboards RPA en 3001-3013) y ahora el panel Sentinel SMS en 3014. Los RPA
+Monitor han ido saliendo de ahí hacia sentinel020 (ver abajo); los procesos que
+migran se borran del dump de pm2 con `pm2 delete` + `pm2 save`.
+
+**sentinel020** (192.168.1.99, `ssh sentinel020` por llave, puerto 22) **tampoco
+es nodo rqlite**: es el equipo donde se concentran los **RPA Monitor**. Windows 11
+25H2, usuario `sentinel`, Ryzen 5 3500U, 15.4 GB RAM, `D:` con ~300 GB libres.
+Node 23.11.0 en `%USERPROFILE%\node`, Git y Chrome oficial; **sin PM2**. Verificado
+en vivo el 2026-09-22. Ver [Servicio 8](#servicio-8-rpa-monitor-en-sentinel020).
 
 Nota: node-ids NO siguen el orden de los hosts — sentinel002 es node9 (node2 ya lo tenía sentinel003). Al añadir un nodo, usar el siguiente node-id libre, no el número del host. **Comprobar el id libre en vivo** con `curl 'http://<ip>:4001/nodes?pretty'`, no en esta tabla.
 
@@ -254,7 +276,26 @@ que el reloj pinte una bandeja unificada consultando dos APIs idénticas.
 - Relación histórica: `Run/` enlaza a scripts de `PRC_Crypto_Trends`
   (precios del order book de Binance, hoy comentados en el crontab).
 
-## Servicio 4: RPA Monitor Extron (sentinel014)
+## Servicio 4: RPA Monitor Extron (sentinel014) — ⚠️ OBSOLETO
+
+> **Extron ya no corre en sentinel014.** Comprobado en vivo el 2026-09-22:
+> `rpa-extron-cycle.timer` no aparece en `systemctl --user list-timers` y
+> `rpa-extron-dashboard` está `inactive`; sentinel014 solo mantiene rqlite y los
+> timers `sentinel-v2-*`. El RPA se movió a **sentinel020**, donde corre con el
+> Programador de tareas (`RPA Extron - Monitoreo` → `Script\cycle.cmd`,
+> `RPA Extron - Ampronix`, `RPA Extron - Panel` en `:3008`).
+>
+> Lo de abajo se conserva como **registro histórico** del montaje en Ubuntu —
+> sigue siendo la referencia para los gotchas de Bright Data y las unidades
+> systemd. Lo que ya no describe es dónde corre hoy.
+>
+> **El túnel sí sigue en sentinel014 y está sano** (verificado 2026-09-22):
+> `cloudflared` `active`, y su `/etc/cloudflared/config.yml` ya estaba reapuntado
+> a `http://192.168.1.99:3008` — sentinel020. `https://extron.batchtoday.us`
+> devuelve 401 del Express real. Es decir, **sentinel014 quedó como pura puerta
+> de entrada**: enruta pero no sirve nada (nada escucha en su 3008). Lo que
+> estaba obsoleto era la copia del repo, ya reconciliada en
+> [`cloudflared/`](cloudflared).
 
 - Migrado desde la PC el 2026-07-20. Código en `~/RPA_Monitor_Extron` (fuente
   original y assets históricos de 6.5 GB: `D:\RPA Monitor Extron` en la laptop).
@@ -651,6 +692,86 @@ modo que la app del reloj muestre una bandeja unificada.
   `down` para que no arranquen los dos a la vez: dos clientes con la misma auth
   key hacen que Telegram la invalide. Verificado el relevo el 2026-08-26: el
   servicio reconectó con la sesión guardada sin pedir código.
+
+## Servicio 8: RPA Monitor en sentinel020
+
+**sentinel020 es hoy el host de todos los RPA Monitor.** No es nodo rqlite y no
+lleva thermal-guard: es un Windows 11 dedicado a los scrapers. Fueron llegando
+por fases (Extron y LG primero, luego Eizo, Sony el 2026-09-22 y Barco el mismo
+día). Estado verificado en vivo el **2026-09-22**.
+
+| Marca | Carpeta | Panel | `Monitoreo` |
+|---|---|---|---|
+| LG | `D:\RPA Monitor LG` | `:3005` | cada hora en `:35` |
+| Sony | `D:\RPA Monitor Sony` | `:3006` | cada hora en `:50` |
+| **Barco** | `D:\RPA Monitor Barco` | `:3007` | cada hora en `:05` |
+| Extron | `D:\RPA Monitor Extron` | `:3008` | 2×/día 06:00 y 18:00 (+ `RPA Extron - Ampronix` a las 19:00) |
+| Eizo | `D:\RPA Monitor Eizo` | `:3009` | cada hora en `:20` |
+
+### Convención de la máquina
+
+Sustituye a PM2, que **no está instalado** aquí. Cada marca tiene:
+
+- Dos wrappers en `Script\`: `scraper_<marca>.cmd` y `panel_<marca>.cmd`.
+  Descubren la raíz con `%~dp0..` y node con fallback a
+  `%USERPROFILE%\node\node.exe`, así que no llevan rutas fijas. El del panel deja
+  node en primer plano (la tarea figura `Running`) y lleva una guarda `netstat`
+  contra doble arranque.
+- Dos tareas del Programador: `RPA <Marca> - Monitoreo` (horaria, límite 2 h) y
+  `RPA <Marca> - Panel` (al arrancar + cada 5 min, que revive el panel si cae).
+  Principal `sentinel`, logon **S4U**, RunLevel Limited,
+  `MultipleInstances=IgnoreNew`.
+- Scripts de alta versionados en el repo de cada marca:
+  `dev\register_<marca>_tasks.ps1` y `dev\enable_<marca>_tasks.ps1`.
+- Una regla de firewall Inbound TCP por panel, perfiles Domain+Private.
+
+**Exposición a internet:** LG, Sony, Barco y Eizo son **solo LAN**. Los dos que
+salen fuera lo hacen por el túnel `rpa-extron` que corre en **sentinel014**, que
+apunta a este equipo: `extron.batchtoday.us` → `192.168.1.99:3008` y
+`ampronix.batchtoday.us` (solo `^/api/agent/`) → `192.168.1.99:3013`. La
+autenticación no la hace Cloudflare sino el propio Express (Basic Auth,
+`DASH_USER`/`DASH_PASS` del `.env`). Detalle en
+[`cloudflared/`](cloudflared).
+
+### Escalonado horario (2026-09-22)
+
+Las cuatro marcas horarias disparaban todas en punto: cuatro Chrome compitiendo
+a la vez hacían que la corrida de Barco pasara de 49 s a **68 s** (+39 %). Se
+repartieron en `:05` Barco, `:20` Eizo, `:35` LG, `:50` Sony, dejando `:00` libre
+para el ciclo de Extron, que es el pesado (descargas + IA + sync a Shopify).
+El XML previo de cada tarea quedó respaldado en `D:\_backup_tareas\`; revertir
+una es `schtasks /create /xml <fichero> /tn "<tarea>" /f`.
+
+### Gotchas de este equipo
+
+- **`pm2 stop` NO congela un RPA con `cron_restart`** en la máquina de origen:
+  PM2 reinicia la app en cada disparo del cron aunque esté `stopped`. Para
+  congelar de verdad antes de migrar hay que `pm2 delete` + `pm2 save`.
+- **El shell remoto de sentinel020 ya es `cmd.exe`.** Anteponer `cmd /c` rompe el
+  encadenado: `ssh nodo "cmd /c cd /d X && git log"` ejecuta el `cd` en un
+  subproceso que muere y el resto corre en `C:\Users\sentinel`. Mandar
+  `cd /d "ruta" && <comando>` directamente, o usar `git -C`.
+- **Nunca `taskkill /im node.exe`**: los cinco paneles son `node.exe` y caerían
+  todos. Sacar el PID de `netstat -ano | findstr ":<puerto>"` y matar ese.
+- **`Last Result: 267009`** en una tarea es `SCHED_S_TASK_RUNNING`, no un fallo.
+  Esperar a que `Status` vuelva a `Ready` antes de leerlo.
+- `New-ScheduledTaskTrigger -Daily` y `-RepetitionInterval` son juegos de
+  parámetros incompatibles (`AmbiguousParameterSet`). Para un disparador diario
+  con repetición horaria, construir la repetición con un trigger `-Once` auxiliar
+  y copiar `.Repetition`.
+- Al migrar, los ficheros **gitignored no viajan en el `git clone`** y hay que
+  copiarlos a mano: `.env`, `Datos\`, `Docs\` y los de configuración local. En
+  Barco, olvidar `Script\orphan_products.json` descataloga 7 productos por error
+  a las 3 horas.
+- **El hash de un fichero SQLite no sirve** para validar una copia: abrirlo en
+  lectura-escritura cambia la cabecera. Comparar contenido (conteos de filas,
+  `last_seen`), no bytes.
+- Tras un `git pull` que reescribe un `.cmd` en uso, **reiniciar la tarea**:
+  `cmd.exe` lee los batch de forma incremental y el cambio de finales de línea
+  (git los deja en CRLF) desplaza los offsets.
+
+Runbook completo de la migración más reciente, con las cinco fases y todo lo
+verificado: `D:\RPA Monitor Barco\MIGRACION_SENTINEL020.md`.
 
 ## Gotchas operativos
 
