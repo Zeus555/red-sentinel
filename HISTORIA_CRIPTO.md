@@ -472,18 +472,28 @@ Los clips son **columnas y no filas** a propósito: mantiene una fila cada 10 s,
 como las tablas hermanas. Añadir un tamaño es un cambio de esquema, y eso es
 preferible a multiplicar filas por clip.
 
-**Estado medido el 2026-08-31** (1.070 filas, ~3 h): cobertura 98,71 %, reparto
-sentinel014 73,2 % / sentinel016 26,8 %, y **0 filas** violando la coherencia
-estructural (ask VWAP creciente con el tamaño, bid decreciente, ask > bid).
+**Estado medido el 2026-09-04** (30.069 filas, 83,7 h): cobertura **99,85 %**,
+reparto sentinel014 70,8 % / sentinel016 29,2 %, y **0 filas** violando la
+coherencia estructural (ask VWAP creciente con el tamaño, bid decreciente,
+ask > bid).
 
-Aparecieron **2 filas de 1.070 con todo el lado bid a `NULL`** teniendo 50
-niveles, con el lado ask perfecto. La profundidad total de 50 niveles del lado
-bid está normalmente entre $490.000 y $833.000, así que no era libro fino. La
-hipótesis que encaja es que la API devolvió niveles con **tamaño cero** —la
-guarda `qty <= 0` haría exactamente eso—, pero **no se capturó la respuesta cruda
-y queda sin confirmar**. Por eso se añadieron `prof_ask_usd` / `prof_bid_usd`: si
-vuelve a pasar, un `NULL` con profundidad holgada delante señala a la fuente y no
-al mercado.
+El reparto **no es 50/50 como en las tablas hermanas** y se mantiene estable en
+~70/30 a lo largo de los cuatro días. La cobertura no sufre —sentinel014 gana la
+carrera y el `INSERT OR IGNORE` descarta la de 016— pero conviene saber que aquí
+016 actúa más como reserva que como par. La hipótesis es la carga del Chromium
+del agente Jupiter, que vive en ese mismo nodo; no se ha comprobado.
+
+En las primeras 3 h aparecieron **2 filas con todo el lado bid a `NULL`** teniendo
+50 niveles y el ask perfecto. La profundidad total de 50 niveles del lado bid está
+normalmente entre $490.000 y $833.000, así que no era libro fino. La hipótesis que
+encaja es que la API devolvió niveles con **tamaño cero** —la guarda `qty <= 0`
+haría exactamente eso—. Por eso se añadieron `prof_ask_usd` / `prof_bid_usd`: un
+`NULL` con profundidad holgada delante señala a la fuente y no al mercado.
+
+**No ha vuelto a ocurrir.** En 83,7 h hay 3 filas con `bid_2k` nulo y las tres son
+**anteriores** al despliegue del diagnóstico (ninguna tiene `prof_bid_usd`), o sea
+0 casos en las ~80 h posteriores. La causa raíz sigue sin confirmar, pero deja de
+ser un problema activo.
 
 ---
 
@@ -512,15 +522,62 @@ al mercado.
    proxy. Kraken sigue apagado.
 2. ✅ **Hecho.** `cripto_profundidad` es histórico, no foto: una fila cada 10 s con
    retención de 90 días, así que sí permite estudiar oportunidades pasadas.
-3. ⚠️ **A medias.** El dato para hacer el cálculo ya existe —VWAP ejecutable por
-   tamaño, cruzable con `cripto_precio` por `ts`— pero **el cálculo neto de
-   comisiones no está escrito en la base**. Hoy hay que hacerlo en la consulta.
+3. ✅ **Hecho (2026-09-04).** La vista **`v_cripto_arbitraje`** cruza el mark con el
+   VWAP ejecutable y calcula el bruto en las dos direcciones y a dos tamaños:
+   `bruto_vender_cb_10k_bps` (largo en Jupiter al mark, vender contra el bid de
+   Coinbase) y `bruto_comprar_cb_10k_bps` (comprar contra el ask, corto en
+   Jupiter), más los equivalentes a 50 mil, el spread ejecutable y
+   `costo_vuelta_bps`. Se expone el **bruto** y el costo por separado en vez de
+   solo el neto, porque la comisión depende del tramo de volumen de quien opere:
+   restar 132 es un caso, no una ley.
 4. ✅ **Hecho.** Vive en rqlite con la misma elección `CRIPTO_NODOS` + Wheel y el
    mismo `INSERT OR IGNORE` que sus hermanas, así que hereda la redundancia.
 
-**Advertencia sobre el punto 3**, medida en esta casa y no supuesta: el hueco
-bruto entre el mark de Jupiter y Coinbase es de **0,47 bps de mediana y 10,84 bps
-en el peor caso de 44,8 h**, mientras que la comisión *taker* de Coinbase en el
-tramo base es de **60 bps**. Con esos números el arbitraje spot no existe salvo
-para quien opere con rebate. El valor de esta serie, hoy, es **vigilar que el
-mark del agente no se despegue** de la referencia externa, no ejecutar contra él.
+**Advertencia sobre el punto 3**, medida en esta casa y no supuesta. Sobre 46.292
+muestras cruzadas (`v_cripto_comparado`), el hueco bruto entre el mark de Jupiter
+y Coinbase es:
+
+| | |
+|---|---|
+| media | **+0,169 bps** |
+| peor caso | **−13,57 / +13,10 bps** |
+| muestras \|dif\| > 5 bps | 65 (0,14 %) |
+| muestras \|dif\| > 15 bps | **0** |
+
+Contra eso, la comisión *taker* de Coinbase en el tramo base es de **60 bps**, y
+cruzar los dos venues ida y vuelta cuesta ~132. **El hueco nunca superó 14 bps.**
+El arbitraje spot no existe aquí salvo para quien opere con rebate; el valor de
+esta serie es **vigilar que el mark del agente no se despegue** de la referencia
+externa, no ejecutar contra él.
+
+---
+
+## 9. Apagado de la captura (2026-10-19)
+
+Por decisión del dueño, el agente Jupiter queda **obsoleto**: el código se conserva
+en GitHub (`Zeus555/Agent-Jupiter`) y la captura de precios de la red se detiene.
+
+- **Contenedor `prc-agent-jupiter` eliminado en sentinel016.** Llevaba sin dar
+  precio desde el 2026-09-22 y estaba en bucle: no leía WBTC en 25 s, a los 5
+  fallos reiniciaba Chromium, y así sin parar. Tenía al portátil (ASUS K52F,
+  Pentium P6100) a 81-86 °C con carga 5; al quitarlo bajó a ~50 °C con carga 0,1.
+  El calentador del agente es 100 % por demanda: el único que le pedía WBTC era
+  `Sentinel-Cripto.sh`.
+- **Recolectores pausados en el cron** con la marca `#CRIPTO-PAUSA `:
+  `Sentinel-Cripto.sh` (en todos los nodos que lo tenían), `Sentinel-Libro.sh` y
+  `Sentinel-Profundidad.sh` (sentinel014 y sentinel016; entre los dos, cada API
+  recibía una consulta cada 5 s). Respaldo del crontab: `~/crontab.bak-20261019`
+  en cada nodo. Comprobado en los 11 nodos: ninguna línea activa ni ningún
+  recolector en marcha.
+- **Para reactivar** la captura en un nodo:
+  `crontab -l | sed 's/^#CRIPTO-PAUSA //' | crontab -`.
+  `Libro` y `Profundidad` no dependen del agente Jupiter (van a batchtoday.us y a
+  Coinbase); `Cripto` sí, y sin agente no tiene de dónde leer.
+- Las tablas `cripto_precio`, `cripto_libro` y `cripto_profundidad` se conservan
+  con su histórico; sin recolector ya no crecen.
+- **Retirada completa del agente en sentinel016 (2026-10-19):** antes de borrar se
+  copió la carpeta desplegada entera a un lugar privado, fuera del repo, con la
+  configuración y el estado local que no están ni deben estar en GitHub. Copia
+  verificada fichero a fichero; después se borraron la carpeta y la imagen de
+  Docker. Para resucitarlo: clonar GitHub, restaurar esos ficheros desde la copia
+  y `docker compose up -d`.

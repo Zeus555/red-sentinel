@@ -50,12 +50,12 @@ ELECTSECS=0
 # de ahi). La laptop pertenece a la red Sentinel pero no guarda la BD, asi que
 # hay que nombrarla aqui. Separar por comas. Debe estar en TODOS los nodos:
 # cualquiera puede acabar siendo el Wheel y, por tanto, el que vigila.
-EXTRA_NODES=192.168.1.117
+EXTRA_NODES=192.168.0.209
 
 # Nodos que pertenecen a la red pero NO se vigilan. El movil personal entra y sale
 # de la WiFi a diario: avisar de cada desconexion seria ruido constante. Separar
 # por comas. Como EXTRA_NODES, debe estar en TODOS los nodos.
-SKIP_NODES=192.168.1.210
+SKIP_NODES=192.168.0.218
 
 # Tolerancia antes de dar por caido un nodo, en formato ip:segundos (comas para
 # separar varios). La laptop se reinicia una vez por semana y no tiene sentido
@@ -63,7 +63,7 @@ SKIP_NODES=192.168.1.210
 # y sigue avisando de una caida real dentro de la media hora. Sin entrada aqui,
 # un nodo se declara caido en cuanto falla el sondeo (que es lo que se quiere para
 # los que estan siempre encendidos).
-GRACE_NODES=192.168.1.117:1800
+GRACE_NODES=192.168.0.209:1800
 
 # >>> nodo movil (roaming) >>>
 # SOLO para equipos que cambian de red a diario: hoy sentinel019, el movil
@@ -100,9 +100,17 @@ BAT_CAIDA_PCT=5
 # Suelo absoluto estando enchufado:
 BAT_MIN_PCT=30
 
-# Precio de criptomonedas (lo ejecuta SOLO el Wheel; los demas salen sin hacer nada).
-# Pares separados por comas, tal como los nombra la API de Coinbase.
-CRIPTO_PARES=BTC-USD
+# Precio de cripto. Lo ejecutan el Wheel y los nodos de CRIPTO_NODOS (mas abajo);
+# los demas salen sin hacer nada.
+#
+# La fuente es el agente `prc-agent-jupiter`, NO Coinbase: el mercado "WBTC" de
+# Jupiter Perps se liquida contra un oraculo BTC/USD, y ese es el numero que
+# gobierna las posiciones. Por diseno el agente sostiene UNA moneda caliente a la
+# vez, asi que se le pregunta siempre lo mismo; al alternar simbolos devuelve
+# valores de 15-20 s.
+JUPITER_URL=http://192.168.0.159:3011
+CRIPTO_SIMBOLO=WBTC
+CRIPTO_PAR=WBTC-USD
 # Cada cuantos segundos se muestrea (el instante se redondea a este paso y forma
 # parte de la clave, para que un relevo de Wheel no duplique filas).
 CRIPTO_SEGUNDOS=10
@@ -110,6 +118,10 @@ CRIPTO_SEGUNDOS=10
 # ~125 MB, y el limite real de la red es el nodo con MENOS disco libre, porque
 # rqlite replica la base entera en todos.
 CRIPTO_RETENCION_DIAS=90
+# Nodos que recolectan ADEMAS del Wheel. Dos a la vez a proposito: si uno se
+# atasca unos segundos, el otro ya tiene la muestra y no queda hueco. No duplica
+# filas porque la clave es (par, exchange, instante redondeado) con OR IGNORE.
+CRIPTO_NODOS=sentinel014,sentinel016
 
 
 # >>> libro de ordenes >>>
@@ -121,6 +133,24 @@ LIBRO_URL=https://batchtoday.us/price
 LIBRO_PAR=BTC-USD
 LIBRO_EXCHANGE=coinbase
 # <<< libro de ordenes <<<
+
+# >>> profundidad del libro >>>
+# Sentinel-Profundidad.sh: VWAP ejecutable caminando el libro, en la misma
+# rejilla de 10 s. Responde a lo que el nivel 1 no puede: a que precio ejecutas
+# de verdad 2 mil, 10 mil, 50 mil o 250 mil dolares. Medido sobre BTC-USD, el
+# spread del nivel 1 promedia 0,02 bps y el ejecutable a 250 mil es de 2,51.
+#
+# A diferencia de LIBRO_URL, esto NO pasa por el proxy de AWS: consulta Coinbase
+# Advanced Trade directamente, que es publico y sin token.
+PROF_URL=https://api.coinbase.com/api/v3/brokerage/market/product_book
+PROF_PAR=BTC-USD
+PROF_EXCHANGE=coinbase
+# 100 niveles pesan ~9 KB. Con 50 el lado ask no cubria el clip de 250 mil el
+# 48 % de las veces y esa columna salia NULL. Deliberadamente NO se usa el
+# book?level=2 de api.exchange.coinbase.com: devuelve el libro entero, 1,15 MB
+# por llamada, que a 10 s serian 600 MB/hora por nodo.
+PROF_NIVELES=100
+# <<< profundidad del libro <<<
 # >>> zona horaria de la flota >>>
 # Se fija aqui, y no en el ajuste de cada aparato, porque la flota mezcla Ubuntu,
 # Termux y tablets Fire y cada familia se configura distinto: sentinel016 corria

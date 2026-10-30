@@ -81,7 +81,7 @@ entero(){ case "${1:-}" in ''|*[!0-9]*) printf 0 ;; *) printf '%s' "$1" ;; esac;
 if [ -n "${RQLITE:-}" ]; then
   MIO=$(curl -s -m 4 "http://127.0.0.1:${PORT:-8181}/fitness?token=$TOKEN" 2>/dev/null)
   MI_EST=$(entero "$(campo "$MIO" estable)"); MI_UP=$(entero "$(campo "$MIO" uptime)")
-  OTROS=$(curl -s -m 5 "$RQLITE/nodes?timeout=2s" 2>/dev/null \
+  OTROS=$(curl -s -m 5 "$RQLITE/nodes?nonvoters&timeout=2s" 2>/dev/null \
           | grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | sort -u)
   for ip in $OTROS; do
     v=$(curl -s -m 4 "http://$ip:${PORT:-8181}/version?token=$TOKEN" 2>/dev/null)
@@ -176,7 +176,9 @@ if [ -n "${RQLITE:-}" ]; then
   # grep -o y no sed: con 'sed s/.*\(IP\).*/\1/' el '.*' inicial es CODICIOSO y se
   # come el primer octeto ("192.168.1.124" salia como "2.168.1.124"), con lo que
   # ningun nodo respondia y se habria avisado de una caida total falsa.
-  IPS=$(curl -s -m 5 "$RQLITE/nodes?timeout=2s" 2>/dev/null \
+  # 'nonvoters' es obligatorio: sin el, /nodes solo lista los nodos con voto (3 desde
+  # el 2026-10-30) y el resto de la flota dejaria de vigilarse sin ningun aviso.
+  IPS=$(curl -s -m 5 "$RQLITE/nodes?nonvoters&timeout=2s" 2>/dev/null \
         | grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' \
         | sort -u)
 fi

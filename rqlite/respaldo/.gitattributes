@@ -1,0 +1,8 @@
+# Estos ficheros se copian tal cual a los equipos: un CRLF rompe el shebang y el sed
+# de los .sh, y cmd.exe necesita CRLF para leer bien un .cmd.
+*.sh      text eol=lf
+*.js      text eol=lf
+*.service text eol=lf
+*.timer   text eol=lf
+*.cmd     text eol=crlf
+*.ps1     text eol=crlf

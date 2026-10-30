@@ -1,0 +1,5 @@
+[Unit]
+Description=Sentinel v2 - comprobar que el respaldo de rqlite sigue saliendo (una pasada)
+[Service]
+Type=oneshot
+ExecStart=/bin/sh %h/PRC_Sentinel/v2/Sentinel-RespaldoVigia.sh

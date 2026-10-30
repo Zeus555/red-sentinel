@@ -1,5 +1,16 @@
 # cloudflared — el túnel de sentinel014
 
+> ⚠️ **Este espejo describe un montaje que ya no está en uso** (comprobado en vivo
+> el 2026-10-04). El túnel `rpa-extron` se movió a **sentinel020** el 2026-09-24:
+> corre allí como servicio de Windows (`cloudflared`, LocalSystem), con su
+> `config.yml` en `C:\Windows\System32\config\systemprofile\.cloudflared\` y los
+> dos destinos en `http://localhost:3008` y `http://localhost:3013`. En
+> sentinel014 la unidad `cloudflared` está `inactive` y `disabled`, y su
+> `/etc/cloudflared/config.yml` conserva las IP `192.168.1.99` de antes.
+> Consecuencia práctica: el túnel ya **no depende de ninguna IP de la LAN**, y por
+> eso siguió funcionando sin tocar nada cuando la red pasó a `192.168.0.x`.
+> Lo de abajo queda como registro del montaje anterior.
+
 Configuración del Cloudflare Tunnel `rpa-extron` que publica dos dashboards en
 Internet sin abrir un solo puerto en el router. Corre en **sentinel014**
 (node6, 192.168.1.250) como servicio systemd **de sistema**, no de usuario.

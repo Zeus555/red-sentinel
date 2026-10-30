@@ -342,7 +342,7 @@ Para `sentinel014` y `sentinel019`.
 En `~/PRC_Sentinel/v2/sentinel.conf` de sentinel019:
 
 ```sh
-ROAM_SEED=192.168.1.69                          # solo alcanzable en la LAN real
+ROAM_SEED=192.168.0.21                          # solo alcanzable en la LAN real
 ROAM_SVC=rqlited
 ROAM_CONFIRMA=2
 RQLITE_FALLBACK=http://<100.x-de-sentinel014>:4001
@@ -450,7 +450,7 @@ curl -s -m 6 "http://10.9.0.19:8181/version?token=$(cat ~/PRC_Sentinel/v2/fleet.
 | `/version` desde la laptop | responde `Sentinel ... 2.0.0` |
 | `/version` **sin** token | `401` |
 | `ssh sentinel019` | entra |
-| desde el móvil: `curl 192.168.1.69:4001/status` | **falla** — y debe fallar: es lo que le dice a `Sentinel-Roam.sh` que está fuera |
+| desde el móvil: `curl 192.168.0.21:4001/status` | **falla** — y debe fallar: es lo que le dice a `Sentinel-Roam.sh` que está fuera |
 | desde el móvil: `curl 10.9.0.14:4001/status` | responde — es la vía de la telemetría |
 | `sv status rqlited` en el móvil | `down` — lo paró `Sentinel-Roam.sh` |
 | `cat ~/PRC_Sentinel/v2/roam.state` | `fuera\|fuera\|N` |
@@ -511,11 +511,16 @@ Decisiones de configuración que importan:
   peers se hablan **entre sí a través del hub**, no directamente.
 - **NO se anuncian rutas hacia `192.168.1.0/24`**, por lo explicado en el §4:
   el sondeo de `ROAM_SEED` dejaría de distinguir casa de calle.
+- **Desde el 2026-10-04 la LAN de casa es `192.168.0.0/24`** (router nuevo), así
+  que todo lo que este documento dice de `192.168.1.0/24` vale ahora para esa
+  subred. La semilla pasó de `192.168.1.69` (sentinel001, que ese día no estaba
+  en la red) a **`192.168.0.21` (sentinel014)**, y el nodo móvil quedó en
+  `192.168.0.218`. Las direcciones de malla `10.9.0.x` no cambiaron.
 
 Config del nodo móvil (`~/PRC_Sentinel/v2/sentinel.conf`):
 
 ```sh
-ROAM_SEED=192.168.1.69                  # solo alcanzable en la LAN real
+ROAM_SEED=192.168.0.21                  # solo alcanzable en la LAN real
 ROAM_SVC=rqlited
 ROAM_CONFIRMA=2
 RQLITE_FALLBACK=http://10.9.0.14:4001   # sentinel014 por la malla

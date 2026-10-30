@@ -3,7 +3,7 @@
 -- =====================================================================
 --
 -- Rescatado el 2026-07-26 desde el cluster EN VIVO, leyendo sqlite_master por
--- la API HTTP de node6 (sentinel014, 192.168.1.250:4001) con level=none.
+-- la API HTTP de node6 (sentinel014, 192.168.0.21:4001) con level=none.
 -- Solo lectura: no se escribio nada en el cluster para obtener esto.
 --
 -- POR QUE EXISTE ESTE FICHERO
@@ -162,4 +162,11 @@ CREATE TABLE indeed_jobs (
 CREATE INDEX idx_indeed_jobs_last_seen ON indeed_jobs(last_seen_at);
 CREATE INDEX idx_indeed_jobs_status ON indeed_jobs(status);
 
--- fin: 12 tablas, 1 vista(s), 7 indices
+-- ---------------------------------------------------------------------
+-- RESPALDOS (una fila por copia buena; la escribe sentinel020 y la lee el vigia
+-- de sentinel014, ver respaldo/). Anadida el 2026-10-30.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE sentinel_respaldo (fichero TEXT PRIMARY KEY, ts INTEGER NOT NULL, fuente TEXT, bytes INTEGER, sha256 TEXT, offsite INTEGER, aviso TEXT);
+
+-- fin: 13 tablas, 1 vista(s), 7 indices

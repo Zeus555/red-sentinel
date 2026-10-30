@@ -21,17 +21,64 @@ quedan como *sin determinar*: sondearlos cuando vuelvan con
 
 | Host SSH    | IP LAN         | rqlite node-id | Modelo (SoC / SO)                | Rol extra                        |
 |-------------|----------------|----------------|----------------------------------|----------------------------------|
-| sentinel001 | 192.168.1.69   | node1          | Samsung Galaxy A12 `SM-A125U` (MediaTek Helio P35 / MT6765, Android 12) | WhatsApp_Checker + API del reloj (:8002), Puente Telegram (:8003), PRC_Sentinel (:8081-8100) |
-| sentinel002 | 192.168.1.65   | node9          | OnePlus Nord N100 `BE2015`, variante Metro (Snapdragon 460 / bengal, Android 11) | unido 2026-07-17 |
-| sentinel003 | 192.168.1.94   | node2          | Samsung Galaxy A14 `SM-A145P` / `a14m` (MediaTek Helio G80 / MT6768, Android 15) | tope de carga ~80 % |
-| sentinel005 | 192.168.1.252  | node3          | T-Mobile REVVL V+ 5G `Sprout`, de Wingtech (Dimensity 700 / MT6833, Android 12) |                                  |
-| sentinel009 | 192.168.1.124  | node4          | Amazon Fire HD 8 12.ª gen `KFRAWI` / `raspite` (MT8169, Fire OS 8.3.3.8) | gemela física de 010 |
-| sentinel010 | 192.168.1.190  | node5          | Amazon Fire HD 8 12.ª gen `KFRAWI` / `raspite` (MT8169, Fire OS 8.3.3.8) | líder rqlite habitual · gemela física de 009 |
-| sentinel014 | 192.168.1.250  | node6          | — no es teléfono (Ubuntu 24.04)  | rqlite en Ubuntu 24.04 (systemd user), **RPA Monitor Extron** (ciclo 2×/día + dashboard :3008) |
-| sentinel016 | 192.168.1.91   | node7          | — no es teléfono (Ubuntu 24.04)  | rqlite en Ubuntu 24.04 (systemd user), prc-agent-jupiter (Docker, wallet Phantom) |
-| sentinel017 | 192.168.1.212  | node8          | Motorola moto g play 2024 `fogona` (Qualcomm Snapdragon, plataforma `bengal`, Android 14) | unido 2026-07-17 |
-| sentinel018 | 192.168.1.211  | node10         | Samsung Galaxy A20 `SM-A205U` / `a20p` (Samsung Exynos 7904, Android 10) | detectado en auditoría remota 2026-07-21 (reporta telemetría battery) |
-| sentinel019 | 192.168.1.210  | node11         | Google Pixel 6 (Tensor, Android 17, aarch64) | celular personal, unido 2026-07-24. Backend **Sentinel SMS** (:8010, solo loopback, pm2) |
+| sentinel001 | 192.168.0.231  | node1          | Samsung Galaxy A12 `SM-A125U` (MediaTek Helio P35 / MT6765, Android 12) | WhatsApp_Checker + API del reloj (:8002), Puente Telegram (:8003), PRC_Sentinel (:8081-8100) |
+| sentinel002 | 192.168.0.45   | node9          | OnePlus Nord N100 `BE2015`, variante Metro (Snapdragon 460 / bengal, Android 11) | unido 2026-07-17 |
+| sentinel003 | 192.168.0.214  | node2          | Samsung Galaxy A14 `SM-A145P` / `a14m` (MediaTek Helio G80 / MT6768, Android 15) | tope de carga ~80 % |
+| sentinel005 | 192.168.0.166  | node3          | T-Mobile REVVL V+ 5G `Sprout`, de Wingtech (Dimensity 700 / MT6833, Android 12) |                                  |
+| sentinel009 | 192.168.0.154  | node4          | Amazon Fire HD 8 12.ª gen `KFRAWI` / `raspite` (MT8169, Fire OS 8.3.3.8) | gemela física de 010 |
+| sentinel010 | 192.168.0.34   | node5          | Amazon Fire HD 8 12.ª gen `KFRAWI` / `raspite` (MT8169, Fire OS 8.3.3.8) | líder rqlite habitual · gemela física de 009 |
+| sentinel014 | 192.168.0.21   | node6          | — no es teléfono (Ubuntu 24.04)  | rqlite en Ubuntu 24.04 (systemd user), **RPA Monitor Extron** (ciclo 2×/día + dashboard :3008) |
+| sentinel016 | 192.168.0.159  | node7          | — no es teléfono (Ubuntu 24.04)  | rqlite en Ubuntu 24.04 (systemd user), prc-agent-jupiter (Docker, wallet Phantom) |
+| sentinel017 | 192.168.0.22   | node8          | Motorola moto g play 2024 `fogona` (Qualcomm Snapdragon, plataforma `bengal`, Android 14) | unido 2026-07-17 |
+| sentinel018 | 192.168.0.130  | node10         | Samsung Galaxy A20 `SM-A205U` / `a20p` (Samsung Exynos 7904, Android 10) | detectado en auditoría remota 2026-07-21 (reporta telemetría battery) |
+| sentinel019 | 192.168.0.218  | node11         | Google Pixel 6 (Tensor, Android 17, aarch64) | celular personal, unido 2026-07-24. Backend **Sentinel SMS** (:8010, solo loopback, pm2) |
+
+**Cambio de subred (2026-10-04).** Con el router y el proveedor nuevos la LAN
+pasó de `192.168.1.0/24` a **`192.168.0.0/24`** (gateway `192.168.0.1`, mismo
+SSID). La tabla de arriba lleva las IP nuevas; la laptop sentinel013 quedó en
+`192.168.0.209`. Las IP salen por DHCP: **hay que reservarlas por MAC en el
+router**, porque van escritas en el arranque de rqlited, en `~/.profile`, en
+`sentinel.conf` y en el `~/.ssh/config` de la laptop. Los 11 nodos quedaron
+reconfigurados ese mismo día. **sentinel020 (192.168.0.79)** necesitó que el
+dueño le abriera SSH a mano: Windows trató la red nueva como *Pública* y la
+regla de OpenSSH solo aplica al perfil Privado. Ahí se corrigieron los dos
+alias hacia sentinel014 de su `~/.ssh/config` y, en sentinel014, el
+`from="192.168.0.79"` de la llave `sentinel020-rpa-ampronix`. **Quedan sus
+reglas de firewall de los paneles** las actualizó el dueño (origen
+`192.168.0.0/24`, red en perfil Privado): los seis paneles responden desde la
+LAN. **El relay de DOTmed dejó de servir tal cual:** con la IP pública del
+proveedor nuevo `dotmed.com` devuelve 403 a todos los equipos de casa (probado
+con el `curl` exacto de la app desde 014, 016, 005 y 010). Se resolvió sacando
+ese `curl` por **RED Proxy** (puertos fijos 8801–8850 y rotativo 8888, salida
+por IPv6 de AWS): RPA Ampronix elige un puerto fijo al azar en cada petición
+(`DOTMED_RELAY_PROXY`). **El relay de RED Proxy se mudó ese mismo día de
+sentinel014 a sentinel020**, por decisión del dueño de tener allí los dos
+proxies: ahora son dos tareas programadas («RED Proxy - Tunel» y «RED Proxy -
+Rotador», en `D:\RED Proxy\relay\`), y en sentinel014 `prc-relay-tunnel` y
+`prc-relay-proxy` quedaron parados y deshabilitados. Detalle en el README del
+repositorio RED Proxy. Qué se tocó en cada nodo y cómo se recuperó rqlite: ver
+[Servicio 2](#servicio-2-rqlite-clúster-de-11-nodos).
+
+**Cron tras un reinicio (hallado el 2026-10-04 en sentinel001 y sentinel019).**
+Cuando a `crond` lo arranca el script de Termux:Boot, sus trabajos no heredan
+el `LD_PRELOAD` de termux-exec, y los scripts con `#!/usr/bin/env sh` (elect,
+alert, watchdog, bateria, cripto, roam) fallan con *not found* — en Termux no
+existe `/usr/bin/env`. Solo sobrevive `thermal-guard.sh`, que lleva shebang
+absoluto, así que la telemetría sigue y **nada delata el fallo**: estaban así
+sentinel018 desde el 28/08, sentinel019 desde el 26/08, sentinel003 desde el
+22/09 y sentinel001 desde el 30/09. Se ve en `watchdog.log` (`watchdog.sh: not
+found`) y en la fecha de la última línea de `elect.log`. Corregido el 2026-10-04
+en el arranque de **los nueve nodos Termux** y en
+[`termux_boot/00-services.sh`](termux_boot/00-services.sh): `crond` se lanza con
+`LD_PRELOAD` puesto. En los cuatro afectados se sustituyó además el `crond` en
+marcha. La corrección del arranque no se ha probado con un reinicio real.
+
+**Pendiente de ese cambio en sentinel016:** el agente Jupiter filtra por IP de
+origen en dos capas —`TRADE_ALLOWED_IPS` en su `.env` y las reglas `DOCKER-USER`
+de `deploy/firewall-sentinel016.sh`— y ambas siguen con `192.168.1.250`
+(sentinel014) y `192.168.1.117` (laptop). Hasta que se actualicen a
+`192.168.0.21` y `192.168.0.209` (el script exige `sudo`), el puerto 3011 solo
+responde desde el propio sentinel016.
 
 **Bypass de batería: ninguno lo soporta** (comprobado 2026-09-16). Ningún modelo
 lo trae de fábrica —es cosa de móviles gaming—, **no hay root en ningún nodo**
@@ -49,7 +96,8 @@ La laptop se llama **sentinel013** y no es nodo rqlite: corre el pm2 con 16 apps
 Monitor han ido saliendo de ahí hacia sentinel020 (ver abajo); los procesos que
 migran se borran del dump de pm2 con `pm2 delete` + `pm2 save`.
 
-**sentinel020** (192.168.1.99, `ssh sentinel020` por llave, puerto 22) **tampoco
+**sentinel020** (192.168.0.79 desde el 2026-10-04, antes 192.168.1.99 —
+`ssh sentinel020` por llave, puerto 22) **tampoco
 es nodo rqlite**: es el equipo donde se concentran los **RPA Monitor**. Windows 11
 25H2, usuario `sentinel`, Ryzen 5 3500U, 15.4 GB RAM, `D:` con ~300 GB libres.
 Node 23.11.0 en `%USERPROFILE%\node`, Git y Chrome oficial; **sin PM2**. Verificado
@@ -57,7 +105,7 @@ en vivo el 2026-09-22. Ver [Servicio 8](#servicio-8-rpa-monitor-en-sentinel020).
 
 Nota: node-ids NO siguen el orden de los hosts — sentinel002 es node9 (node2 ya lo tenía sentinel003). Al añadir un nodo, usar el siguiente node-id libre, no el número del host. **Comprobar el id libre en vivo** con `curl 'http://<ip>:4001/nodes?pretty'`, no en esta tabla.
 
-Otras IPs del ecosistema: `IpWheel=192.168.1.117` (nodo "Wheel" que sirve
+Otras IPs del ecosistema: `IpWheel=192.168.0.209` (nodo "Wheel" que sirve
 `/useragent` a los Sentinels).
 
 ## Servicio 1: WhatsApp_Checker (`whatsapp_checker/`)
@@ -121,7 +169,7 @@ que el reloj pinte una bandeja unificada consultando dos APIs idénticas.
   - `consultar_bd(sql)` → `GET {RQLITE_API}/db/query` con guard SELECT/PRAGMA/WITH
     (rechaza escrituras), fallback `level=weak`→`none`.
 - **GOTCHA**: rqlited escucha en la IP LAN (`-http-addr 192.168.1.252:4001`),
-  **NO en localhost** → `RQLITE_API=http://192.168.1.252:4001` en el `.env`
+  **NO en localhost** → `RQLITE_API=http://192.168.0.166:4001` en el `.env`
   (o el `MyIP` del nodo). localhost:4001 da respuesta vacía.
 - **Memoria (2026-07-06)**: persiste en `chat_state.json` (junto a server.js):
   - **Esquema cacheado** (5 min) inyectado en el system prompt con columnas y
@@ -207,7 +255,106 @@ que el reloj pinte una bandeja unificada consultando dos APIs idénticas.
 - **Supervisado por runit desde 2026-07-05** en los nodos Android/Termux (9 a 2026-07-24) y por **systemd (--user)** en los nodos Ubuntu (sentinel014 y sentinel016).
   - Android/Termux: servicio `$PREFIX/var/service/rqlited` (ver `runit_services/`), log con svlogd en `$PREFIX/var/log/sv/rqlited/current`.
   - Ubuntu (sentinel014/sentinel016): servicio de usuario systemd `~/.config/systemd/user/rqlited.service`, log con `journalctl --user -u rqlited`. Linger habilitado. **Copia local en [`systemd_services/`](systemd_services) desde 2026-07-26.**
-  - Configuración del join: los nodos secundarios llevan `-join 192.168.1.69:4002`.
+  - Configuración del join: desde el 2026-10-30 todos apuntan a los tres votantes,
+    `-join 192.168.0.21:4002,192.168.0.159:4002,192.168.0.166:4002` (014, 016 y
+    005), quitando la propia. Con un único destino, si ese equipo está apagado un
+    nodo que reinicia no arranca (`failed to join cluster`).
+- **Cambio de subred y recuperación del clúster (2026-10-04).** Al pasar la LAN a
+  `192.168.0.x` cada rqlited quedó `Candidate` viéndose solo a sí mismo: la
+  configuración Raft guarda las direcciones de los 11 peers y todas eran
+  `192.168.1.x`. Sin quórum no se puede cambiar la configuración por la vía
+  normal, así que se recuperó con `peers.json` (procedimiento oficial de rqlite):
+  1. Comprobar en `/status` que los nodos presentes tienen el **mismo**
+     `last_log_index` y `term` (lo tenían: 4635878 / 5384).
+  2. Parar rqlited en **todos** los que participan antes de arrancar ninguno.
+     En sentinel009 `sv stop` se quedó colgado a medio apagar («want down, got
+     TERM», puerto ya cerrado): hubo que matarlo por PID.
+  3. Respaldo: `tar -cf ~/rqlite-data.bak-20261004.tar -C ~ rqlite-data`.
+  4. `~/rqlite-data/raft/peers.json` idéntico en todos, con `id`, `address`
+     (IP nueva `:4002`) y `non_voter:false` de los nodos presentes.
+  5. Cambiar `-http-adv-addr`, `-raft-adv-addr` y `-join` en el arranque
+     (`$PREFIX/var/service/rqlited/run` o la unidad systemd + `daemon-reload`).
+  6. Arrancar todos a la vez. Líder en menos de un minuto.
+
+  Se recuperó con cinco (003, 009, 010, 014, 018). Los que llegaron después
+  **no necesitan `peers.json`**: basta corregir su arranque y reiniciar; al
+  arrancar piden el join y el líder sustituye su dirección vieja (sentinel001,
+  002, 005, 016 y 019 entraron así, conservando sus datos). Quedó en 11 voters.
+  sentinel001 era el nodo de arranque y no llevaba `-join`; ahora lo lleva como
+  los demás.
+  **Ojo con un nodo muy atrasado**: sentinel016 llevaba tres días fuera y
+  necesitó la copia completa (~355 MB por WiFi). Mientras sentinel014 se la
+  enviaba perdió el contacto con el quórum y **dejó de ser líder**; el relevo
+  fue limpio (sentinel010), pero el rqlited de 016 quedó sin responder hasta
+  reiniciarlo. Reingresar nodos atrasados de uno en uno y comprobar después
+  `applied_index` contra el líder. sentinel017 tenía el almacén roto desde el
+  7/09 (`interrupted reap plan … data.db: no such file`): se apartó a
+  `~/rqlite-data.corrupto-20261004` y entró limpio como node8.
+  Respaldos del arranque original: `~/rqlited.run.bak-20261004` (Termux) y
+  `~/rqlited.service.bak-20261004` (sentinel014).
+- **2026-10-15/16: tormenta de elecciones por un snapshot de 410 MB.** sentinel002
+  se atrasó más que `trailing_logs` (10240 entradas, ~4 h) y el líder tuvo que
+  mandarle la base entera por WiFi 2,4 GHz. Los envíos fallaban (`snapshot reader
+  idle timeout exceeded`), cada líder nuevo reintentaba y la red se saturaba:
+  cambios de líder vistos desde 014, de 3-17/día a **439 el 15/10 y 548 el
+  16/10** (término 5384 el 04/10 → 7319). Mientras tanto nadie escribía (huecos
+  simultáneos de telemetría en todos los nodos) y el watchdog reiniciaba
+  aceptadores (también en 014). Se agravaba porque los tiempos de Raft eran los
+  de fábrica: un líder-teléfono dimitía solo con cualquier parón de 500 ms (105
+  `failed to contact quorum of nodes, stepping down` en el log de sentinel001).
+  **Cambio: `-raft-heartbeat-timeout=4s -raft-election-timeout=4s
+  -raft-leader-lease-timeout=4s`** en el arranque, aplicado de uno en uno con
+  `applied_index` y líder comprobados tras cada nodo: 001, 002, 003, 005, 009,
+  010, 014, 017, 018, (21:20) 019 y (19/10) 016: los 11. Entre
+  las 18:37 y las 21:19 hubo 4 elecciones, frente a ~15 por hora antes.
+  Respaldo: `run.bak-20261016` junto al `run` (Termux) y
+  `rqlited.service.bak-20261016` (014).
+- **2026-10-30: solo 3 nodos con voto**, decisión del dueño: los de mayor permanencia
+  y potencia. Votan **sentinel014 (node6), sentinel016 (node7) y sentinel005 (node3)**;
+  el resto replica con `-raft-non-voter=true`. Suplente: sentinel009. Quórum: 2 de 3,
+  o sea que **aguanta la caída de un solo votante**; con dos caídos nadie escribe.
+  Elegidos con datos de ese día (tiempo fuera según `sentinel_temp`; potencia = tiempo
+  de un bucle de 3 millones en gawk):
+
+  | Nodo | Fuera 90 d (min) | Fuera 30 d (min) | Bucle (ms) | RAM (GB) |
+  |---|---|---|---|---|
+  | sentinel014 | 464 | 395 | 356 | 7,4 |
+  | sentinel016 | 24.547 | 24.327 | 464 | 7,7 |
+  | sentinel005 | 479 | 451 | 828 | 3,7 |
+  | sentinel009 | 453 | 441 | 1984 | 1,8 |
+  | sentinel010 | 507 | 484 | 2004 | 1,8 |
+  | sentinel003 | 17.779 | 430 | 964 | 3,7 |
+  | sentinel001 | 2.215 | 788 | 1910 | 2,7 |
+  | sentinel002 | 3.629 | 3.582 | 1596 | 3,6 |
+  | sentinel018 | 24.470 | 1.406 | 1882 | 2,7 |
+  | sentinel019 | 48.482 | 7.323 | 805 | 7,6 |
+
+  sentinel016 es la apuesta: es el segundo más potente, pero su historial es malo. Pasó
+  ~13 días fuera en octubre, cuando el agente Jupiter lo llevaba a 80-89 °C; se retiró
+  el 19/10 y desde entonces da 1426-1440 filas al día, a 44-51 °C. Si vuelve a caerse,
+  cambiarlo por sentinel009, que tiene la mejor permanencia pero solo 1,8 GB de RAM.
+  sentinel019 no se consideró: es el móvil personal y sale de casa.
+  - **`/nodes` solo lista los nodos con voto.** Quien quiera la flota entera debe pedir
+    `/nodes?nonvoters`. Sin eso, las alertas y la elección de Wheel habrían perdido de
+    vista a 7 teléfonos en silencio; por eso se cambiaron antes `Sentinel-Wheel.awk`,
+    `Sentinel-Alert.sh` y `toolEstadoRed` del chatbot, que además cuenta el quórum solo
+    entre votantes. Lo mismo vale para cualquier script nuevo.
+  - **Quitarle el voto a un nodo** (de uno en uno; 9-15 s y sin elecciones):
+    1. Añadir `-raft-non-voter=true` al `run` (respaldo `run.bak-20261030`).
+    2. `sv -w 60 down rqlited`
+    3. `curl -XDELETE http://192.168.0.21:4001/remove -d '{"id":"nodeN"}'`
+    4. `sv up rqlited` y comprobar en `/nodes?nonvoters` que sale `voter:false`.
+
+    El `/remove` es obligatorio: si el id y la dirección ya están en el clúster, rqlite
+    ignora el join y el nodo seguiría votando. **Dar el voto** es lo mismo, quitando el
+    flag.
+  - **Mover al líder:** `curl -XPOST http://<ip-del-lider>:4001/leader -d '{"id":"node6"}'`.
+    Ojo: en el líder surte efecto al instante, no es una consulta.
+  - **Pendiente: sentinel017.** Se quitó del clúster estando caído, sin poder cambiar su
+    `run`, así que **al volver entrará como votante** y serían 4, con quórum de 3. En
+    cuanto reaparezca hay que aplicarle el procedimiento de arriba y copiarle
+    `Sentinel-Wheel.awk` y `Sentinel-Alert.sh`. Mientras no esté en el clúster, las
+    alertas no lo vigilan: su lista sale de `/nodes`.
 - 2026-07-07: quórum restaurado y ampliado — los 7 nodos vivos, node5 líder,
   `SELECT 1` con `level=strong` OK.
 - 2026-07-24: 11 nodos, todos `voter` y `reachable`; líder **node8 (sentinel017)**.
@@ -270,8 +417,8 @@ que el reloj pinte una bandeja unificada consultando dos APIs idénticas.
 - `Sentinel-Client.awk`: cliente TCP crudo (`/inet4/tcp/...`) que sigue
   redirecciones "Redirect to port NNNN" entre clones.
 - `Sentinel-Search.awk`: lógica de búsqueda/scraping usada por el servidor.
-- Config por entorno en `~/.profile`: `PathSentinel`, `MyIP=192.168.1.69`,
-  `OS=Termux`, `UserAgent`, `IpWheel=192.168.1.117`, `Name=Sentinel001`.
+- Config por entorno en `~/.profile`: `PathSentinel`, `MyIP=192.168.0.231`,
+  `OS=Termux`, `UserAgent`, `IpWheel=192.168.0.209`, `Name=Sentinel001`.
 - Datos calientes en `Datos/Hot.db` (SQLite).
 - Relación histórica: `Run/` enlaza a scripts de `PRC_Crypto_Trends`
   (precios del order book de Binance, hoy comentados en el crontab).
@@ -288,6 +435,11 @@ que el reloj pinte una bandeja unificada consultando dos APIs idénticas.
 > Lo de abajo se conserva como **registro histórico** del montaje en Ubuntu —
 > sigue siendo la referencia para los gotchas de Bright Data y las unidades
 > systemd. Lo que ya no describe es dónde corre hoy.
+>
+> **Corrección 2026-10-04:** el túnel ya tampoco está en sentinel014. Desde el
+> 2026-09-24 corre en sentinel020 como servicio de Windows, con los destinos en
+> `localhost` (ver [`cloudflared/`](cloudflared)). El párrafo siguiente describe
+> el estado del 22/09.
 >
 > **El túnel sí sigue en sentinel014 y está sano** (verificado 2026-09-22):
 > `cloudflared` `active`, y su `/etc/cloudflared/config.yml` ya estaba reapuntado
@@ -351,7 +503,8 @@ dispositivos. Orden probado:
    ~/go/bin/ ./cmd/rqlited ./cmd/rqlite`. `go install ...@v10.2.5` **falla** por
    las directivas `replace` del go.mod.
 6. **Servicio runit** `$PREFIX/var/service/rqlited/{run,log/run}` con el
-   **siguiente node-id libre según `/nodes` en vivo** y bind `0.0.0.0` + adv addr.
+   **siguiente node-id libre según `/nodes?nonvoters` en vivo**, bind `0.0.0.0` +
+   adv addr y `-raft-non-voter=true`: un nodo nuevo entra sin voto.
 7. **Boot**: `~/.termux/boot/00-services.sh`. Arrancar con
    `. $PREFIX/etc/profile.d/start-services.sh` (con `SVDIR` exportado).
 8. **thermal-guard**: copiar `thermal-guard.sh` + `.conf` desde otro nodo
@@ -772,6 +925,26 @@ una es `schtasks /create /xml <fichero> /tn "<tarea>" /f`.
 
 Runbook completo de la migración más reciente, con las cinco fases y todo lo
 verificado: `D:\RPA Monitor Barco\MIGRACION_SENTINEL020.md`.
+
+## Servicio 9: Respaldo de rqlite (sentinel020 + sentinel014)
+
+Alta 2026-10-30. Cada noche a las 03:45 la tarea `RED Respaldo - rqlite` de sentinel020
+baja una copia de la base, la comprueba y la sube a la EC2. En sentinel014, el timer
+`sentinel-v2-respaldo-vigia` avisa si deja de haber copias recientes. Cómo funciona y
+cómo restaurar: [`rqlite/README.md`](../rqlite/README.md#respaldo-diario).
+
+- En sentinel020: `D:\RED Respaldo\` (`Script\`, `rqlite\`, `Log\respaldo.log`, `.env`
+  con el bot de Telegram, copiado del `.env` de RPA Monitor Extron).
+- Los avisos fallidos llegan por Telegram una vez por pasada. Si todo va bien, no hay
+  mensaje.
+- Comprobar: `curl -G 192.168.0.21:4001/db/query --data-urlencode "q=SELECT * FROM
+  sentinel_respaldo ORDER BY ts DESC LIMIT 3"`.
+
+## Credenciales de Bright Data
+
+Qué ficheros guardan cada credencial y cómo comprobarlas está en una nota privada
+del dueño, fuera de este repo público. Ningún nodo Termux usa Bright Data, y rotar
+el API key no afecta a `BRD_WSS`, que usa usuario y contraseña de zona.
 
 ## Gotchas operativos
 

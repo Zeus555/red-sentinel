@@ -48,13 +48,13 @@ debe terminar muy por debajo de 8 s.
 ## Aplicar
 
 ```bash
-rqlite -H 192.168.1.250 -p 4001 < esquema.sql
+rqlite -H 192.168.0.21 -p 4001 < esquema.sql
 ```
 
 O sentencia a sentencia contra la API:
 
 ```bash
-curl -XPOST '192.168.1.250:4001/db/execute' -H 'Content-Type: application/json' -d '["CREATE TABLE ..."]'
+curl -XPOST '192.168.0.21:4001/db/execute' -H 'Content-Type: application/json' -d '["CREATE TABLE ..."]'
 ```
 
 Ojo: `rqlited` escucha en la IP LAN, **no en localhost**. `localhost:4001`
@@ -62,6 +62,66 @@ devuelve respuesta vacía. Usar siempre la IP del nodo.
 
 ## Lo que esto NO es
 
-Un respaldo de los **datos**. Solo del esquema. Los 989.207 premios y los 225.418
-registros de telemetría viven en el clúster y en nada más. Si eso importa, hace
-falta un `.dump` periódico, que hoy no existe.
+Un respaldo de los **datos**: `esquema.sql` solo guarda el esquema, y además se
+quedó atrás (no lleva `sentinel_bateria` ni las tablas `cripto_*`). Los datos se
+respaldan cada noche, como se explica abajo.
+
+## Respaldo diario
+
+rqlite replica, no respalda: un `DELETE` sin `WHERE` llega a todos los nodos en un
+instante. Por eso, desde el **2026-10-30**, sentinel020 baja cada noche una copia y
+la guarda fuera del clúster. Código en [`respaldo/`](respaldo).
+
+| Pieza | Dónde | Qué hace |
+|---|---|---|
+| Tarea `RED Respaldo - rqlite` | sentinel020, 03:45 | Lanza `Sentinel-Respaldo.sh`. Si el equipo estaba apagado, sale al volver |
+| Copias | `D:\RED Respaldo\rqlite\` | Se conservan 14 diarias, 8 semanales y 12 mensuales |
+| Copia externa | `batchtoday:~/respaldos/rqlite/` | 3 diarias, 2 semanales y 1 mensual, porque la EC2 solo tiene 8,7 GB |
+| Vigía | sentinel014, timer cada 6 h | Avisa si la última copia tiene más de 30 h, por si la tarea ni llega a correr |
+
+Medido el 30/10: 154 MB comprimida, 181 s en total y ninguna elección. La copia sale
+del disco de sentinel014 con `?noleader` (si falla, de sentinel016), no del líder.
+
+Una copia solo cuenta si pasa `gzip -t`, `integrity_check` y una comparación de filas
+con la copia anterior. Si una tabla desaparece o pierde más del 20 % de sus filas, la
+copia se guarda, llega un aviso a Telegram y **no se rota nada** en esa pasada, para
+que las copias buenas no se pierdan. Archivar datos a propósito dará ese aviso una vez.
+
+Por qué no `-auto-backup` de rqlite: lo hace el líder, que puede ser un nodo por
+WiFi, y exige un bucket de S3.
+
+### Restaurar
+
+Toda copia es un SQLite en gzip. `D:\RED Respaldo\Log\respaldo.log` y el `.json` de
+cada copia dicen de dónde salió y cuántas filas tenía. Comprobado el 30/10 con la
+copia de la EC2 en un rqlited aislado: 33 s de carga y las 18 tablas iguales al
+manifiesto.
+
+**Recuperar unas filas o una tabla (lo más probable).** No hace falta tocar el
+clúster: abrir la copia con `sqlite3` en otro equipo y reinsertar lo perdido con
+`/db/execute`.
+
+**Restaurar la base entera.** Sustituye TODO lo que hay en el clúster y se replica a
+todos los nodos por WiFi: es el último recurso.
+
+```bash
+gzip -dc rqlite-AAAAMMDD-HHMM.sqlite.gz > copia.sqlite
+curl -XPOST 'http://192.168.0.21:4001/db/load' -H 'Content-Type: application/octet-stream' -T copia.sqlite
+```
+
+**Ensayar sin riesgo.** Un rqlited suelto, sin `-join` y en loopback, no puede tocar
+el clúster:
+
+```bash
+rqlited -node-id ensayo -http-addr 127.0.0.1:14001 -raft-addr 127.0.0.1:14002 /tmp/ensayo
+```
+
+### Instalar en otro equipo
+
+Copiar `Sentinel-Respaldo.sh`, `respaldo-verifica.js` y `respaldo.cmd` a
+`D:\RED Respaldo\Script\`, crear `D:\RED Respaldo\.env` a partir de
+[`.env.example`](respaldo/.env.example) y ejecutar `registrar-tarea.ps1`. El vigía va
+en `~/PRC_Sentinel/v2/` y sus unidades en `~/.config/systemd/user/`.
+
+Cuando rqlite lleve `-auth`, el `INSERT` del script y la lectura del vigía necesitarán
+credenciales.

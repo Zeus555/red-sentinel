@@ -78,6 +78,24 @@ for f in Sentinel-Server2.awk Sentinel-Worker.awk Sentinel-Allow.conf Sentinel-D
 done
 say "codigo copiado a $BASE"
 
+# --- Trabajos periodicos (colectores) ---
+# Van aparte del nucleo y NO abortan si faltan: un nodo puede instalarse sin
+# ellos, y hasta 2026-08-31 estos ficheros se copiaban a mano, con el resultado
+# de que un alta nueva se quedaba sin recolectar nada y nadie se enteraba.
+# Se copian, pero NO se les pone cron: activarlos es un paso deliberado (ver el
+# resumen del final), igual que arrancar el servicio.
+TRABAJOS=""
+for f in Sentinel-Cripto.sh Sentinel-Libro.sh Sentinel-Profundidad.sh Sentinel-Alert.sh Sentinel-Bateria.sh; do
+  if [ -f "$SRC/$f" ]; then
+    do_ "cp -f '$SRC/$f' '$BASE/$f'"
+    do_ "chmod +x '$BASE/$f'"
+    TRABAJOS="$TRABAJOS $f"
+  else
+    echo "  aviso: $f no esta en $SRC, se omite"
+  fi
+done
+[ -n "$TRABAJOS" ] && say "trabajos copiados (sin cron):$TRABAJOS"
+
 # --- Configuracion: conserva el TOKEN si ya existe ---
 CONF="$BASE/sentinel.conf"
 if [ -f "$CONF" ]; then
@@ -164,3 +182,16 @@ echo "== Resumen =="
 echo "  El v1 NO se ha tocado: sigue en ~/PRC_Sentinel/ y su crontab sigue comentado."
 echo "  El servicio queda DEFINIDO PERO PARADO. Arrancarlo es un paso aparte."
 echo "  Siguiente: copiar ca.pem + <nodo>.pem/.key a $BASE/Certs y lanzar Sentinel-TLS.sh"
+if [ -n "$TRABAJOS" ]; then
+  echo
+  echo "  Los colectores estan copiados pero SIN cron. Si este nodo debe recolectar,"
+  echo "  anadelo a CRIPTO_NODOS en sentinel.conf de la flota y agrega a su crontab:"
+  for f in $TRABAJOS; do
+    case "$f" in
+      Sentinel-Cripto.sh|Sentinel-Libro.sh|Sentinel-Profundidad.sh)
+        echo "    * * * * * $BASE/$f >/dev/null 2>&1" ;;
+    esac
+  done
+  echo "  Cada script comprueba por su cuenta si le toca, asi que ponerlos en un nodo"
+  echo "  que no este en CRIPTO_NODOS es inofensivo: salen sin hacer nada."
+fi

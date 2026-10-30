@@ -47,7 +47,7 @@ function WheelAlcanzable(ip,   c,resp,l,n,i,tr){
 	# que no hay nada que relevar. Vale -1 cuando no hay fuente fiable: en ese
 	# caso no opina y se decide como antes.
 	if (Rqlite=="" || ip=="") return -1
-	c = "curl -s -m " ToutRq " '" Rqlite "/nodes?timeout=5s'"
+	c = "curl -s -m " ToutRq " '" Rqlite "/nodes?nonvoters&timeout=5s'"
 	resp=""
 	while ((c | getline l) > 0) resp = resp l
 	close(c)
@@ -148,9 +148,11 @@ BEGIN {
 	# El clúster rqlite ya sabe que nodos existen: preguntarselo cuesta UNA
 	# peticion. El barrido queda para Sentinel-Discover.awk, que se ejecuta
 	# aparte y con calma.
+	# 'nonvoters' es obligatorio: sin el, /nodes solo lista los nodos con voto (3 desde
+	# el 2026-10-30) y el resto de la flota dejaria de contar como candidato.
 	nrq=0
 	if (Rqlite != ""){
-		c = "curl -s -m 6 '" Rqlite "/nodes?timeout=2s'"
+		c = "curl -s -m 6 '" Rqlite "/nodes?nonvoters&timeout=2s'"
 		resp=""
 		while ((c | getline l) > 0) resp = resp l
 		close(c)

@@ -30,7 +30,8 @@ telefonos que Android apaga, congela y desconecta a voluntad.
 
 - **Servidor HTTP: gawk** (`Sentinel-Server2.awk`) sobre `/inet4/tcp/PORT/0/0`.
   No tiene TLS nativo y **siempre ata 0.0.0.0**, lo que condiciona la seguridad.
-- **Base: rqlite** (Raft sobre SQLite), 11 nodos. Semilla: sentinel001.
+- **Base: rqlite** (Raft sobre SQLite), 11 nodos, 3 con voto (014, 016, 005) desde el
+  2026-10-30. Sin semilla fija. Respaldo diario: `rqlite/README.md`.
 - **mTLS: stunnel** en el 8443, delante del backend gawk.
 - **Supervision:** runit en Termux, systemd `--user` en los Linux. Arranque
   Android via **Termux:Boot** (`~/.termux/boot/00-services.sh`).

@@ -9,7 +9,8 @@ teléfonos que Android apaga, congela y desconecta a voluntad. Este repositorio
 reúne el código, la configuración de ejemplo y la documentación del sistema;
 el código real corre en los nodos y se despliega por `scp`.
 
-A esos 12 se suma **sentinel020** (192.168.1.99), un Windows 11 que no es nodo
+A esos 12 se suma **sentinel020** (192.168.0.79; era 192.168.1.99 hasta el cambio de router del
+2026-10-04), un Windows 11 que no es nodo
 rqlite ni se vigila con el resto: es el caballo de carga donde se concentran los
 cinco **RPA Monitor** (LG, Sony, Barco, Extron y Eizo), con el Programador de
 tareas en lugar de PM2. Ver [Servicio 8](Nodos/README.md#servicio-8-rpa-monitor-en-sentinel020).
@@ -20,7 +21,7 @@ raíz, y `D:\Herramientas\Sentinel_Infra` metida entre herramientas de terceros.
 
 | Carpeta | Era | Qué es |
 |---|---|---|
-| `Wheel\` | `D:\PRC Sentinel` | El nodo **Wheel** que corre en esta laptop (sentinel013, 192.168.1.117). 3106 ficheros. |
+| `Wheel\` | `D:\PRC Sentinel` | El nodo **Wheel** que corre en esta laptop (sentinel013, 192.168.0.209). 3106 ficheros. |
 | `Nodos\` | `D:\Herramientas\Sentinel_Infra` | Espejo **de solo lectura** del código y del arranque de los 11 nodos. |
 | `UserAgent\` | `D:\PRC User Agent` | Alimenta la variable `UserAgent` de toda la red. 6 ficheros. |
 | `rqlite\` | — **nuevo** | El DDL del clúster, que hasta hoy solo existía dentro del clúster. |
@@ -82,7 +83,7 @@ ambos tienen un `Script\Sentinel-Server.awk` con contenido diferente.
 
 `Sentinel-Search.awk` marca como IpWheel al nodo que responde
 `Sentinel Super`. Las variables de entorno lo confirman: en esta laptop
-`MyIP` = `IpWheel` = `192.168.1.117`.
+`MyIP` = `IpWheel` = `192.168.0.209`.
 
 **Fusionarlos en un solo árbol sobrescribiría un `Sentinel-Server.awk` con el
 otro y rompería el descubrimiento del Wheel.** `Sentinel-Search.awk` sí es
@@ -166,7 +167,7 @@ segundo paso puede dejar la tarea eliminada. Usar el Programador de tareas.
 | `Nodos/cloudflared/` | Túnel `rpa-extron` rescatado de sentinel014 (`config.yml`, `cloudflared.service`, README); la credencial `.json` vive solo en el nodo. |
 | `Nodos/runit_services/`, `Nodos/systemd_services/`, `Nodos/termux_boot/` | Unidades de arranque de rqlited, telegram_bridge, whatsapp_checker y RPA Extron. |
 | `UserAgent/` | Alimenta la variable `UserAgent` de toda la red: scripts `.bat`/`.awk` (su `UserAgent.db` queda fuera). |
-| `rqlite/` | DDL del clúster (`esquema.sql`) + README; hasta 2026-07 solo existía dentro del clúster. |
+| `rqlite/` | DDL del clúster (`esquema.sql`) + README; hasta 2026-07 solo existía dentro del clúster. `respaldo/`: copia diaria de la base. |
 | `docs/` | `ADR.md` (decisiones de arquitectura, exportado del knowledge graph) y `ESTRUCTURA.md` (árbol comentado). |
 
 ## Arquitectura en breve
@@ -174,7 +175,8 @@ segundo paso puede dejar la tarea eliminada. Usar el Programador de tareas.
 - **Flota de 12 nodos** domésticos: Android/Termux, dos Amazon Fire, dos Linux
   (sentinel014/016) y esta laptop Windows (sentinel013).
 - **rqlite (Raft sobre SQLite)** en 11 nodos, puertos 4001/4002: la base se
-  replica entera en cada nodo; la semilla es sentinel001.
+  replica entera en cada nodo, pero solo votan sentinel014, sentinel016 y sentinel005.
+  **Respaldo diario** en sentinel020 y en la EC2 ([`rqlite/`](rqlite/README.md#respaldo-diario)).
 - **El Wheel** (coordinador) no es fijo: la red lo elige por aptitud
   (`Sentinel-Wheel.awk` → `wheel.state`) y el trabajo migra solo con el relevo.
 - **Servidor HTTP en gawk** (`Sentinel-Server2.awk`, puerto 8181) sin TLS

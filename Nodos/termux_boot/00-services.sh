@@ -5,5 +5,10 @@
 # 3. service-daemon levanta runsvdir -> rqlited, whatsapp_checker y telegram_bridge.
 termux-wake-lock
 pgrep -x sshd >/dev/null || sshd
-pgrep -x crond >/dev/null || crond
+# crond hereda su entorno a los trabajos. Sin termux-exec precargado los scripts
+# con "#!/usr/bin/env sh" fallan con "not found" (en Termux no existe /usr/bin/env)
+# y la eleccion, las alertas y el vigilante dejan de correr tras cada reinicio.
+TE=/data/data/com.termux/files/usr/lib/libtermux-exec-ld-preload.so
+[ -f "$TE" ] || TE=/data/data/com.termux/files/usr/lib/libtermux-exec.so
+pgrep -x crond >/dev/null || LD_PRELOAD="$TE" crond
 . /data/data/com.termux/files/usr/etc/profile.d/start-services.sh

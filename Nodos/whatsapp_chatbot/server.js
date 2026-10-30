@@ -134,24 +134,27 @@ async function rqliteQuery(sql) {
 }
 
 const NODE_MAP = {
-    node1: { n: 'sentinel001', ip: '192.168.1.69' }, node2: { n: 'sentinel003', ip: '192.168.1.94' },
-    node3: { n: 'sentinel005', ip: '192.168.1.252' }, node4: { n: 'sentinel009', ip: '192.168.1.124' },
-    node5: { n: 'sentinel010', ip: '192.168.1.190' }, node6: { n: 'sentinel014', ip: '192.168.1.250' },
-    node7: { n: 'sentinel016', ip: '192.168.1.91' },
-    node8: { n: 'sentinel017', ip: '192.168.1.212' }, node9: { n: 'sentinel002', ip: '192.168.1.65' },
-    node10: { n: 'sentinel018', ip: '192.168.1.211' },
-    node11: { n: 'sentinel019', ip: '192.168.1.210' }
+    node1: { n: 'sentinel001', ip: '192.168.0.231' }, node2: { n: 'sentinel003', ip: '192.168.0.214' },
+    node3: { n: 'sentinel005', ip: '192.168.0.166' }, node4: { n: 'sentinel009', ip: '192.168.0.154' },
+    node5: { n: 'sentinel010', ip: '192.168.0.34' }, node6: { n: 'sentinel014', ip: '192.168.0.21' },
+    node7: { n: 'sentinel016', ip: '192.168.0.159' },
+    node8: { n: 'sentinel017', ip: '192.168.0.22' }, node9: { n: 'sentinel002', ip: '192.168.0.45' },
+    node10: { n: 'sentinel018', ip: '192.168.0.130' },
+    node11: { n: 'sentinel019', ip: '192.168.0.218' }
 };
 async function toolEstadoRed() {
-    const r = await fetch(`${RQLITE_API}/nodes?pretty`, { signal: AbortSignal.timeout(8000) });
+    // 'nonvoters': sin el, /nodes solo lista los nodos con voto (3 desde el 2026-10-30).
+    // El quorum se cuenta solo entre esos, que son los unicos que deciden.
+    const r = await fetch(`${RQLITE_API}/nodes?pretty&nonvoters&timeout=3s`, { signal: AbortSignal.timeout(8000) });
     const j = await r.json();
     const nodos = Object.entries(j).map(([id, v]) => ({
         id, nombre: (NODE_MAP[id] && NODE_MAP[id].n) || id, ip: (NODE_MAP[id] && NODE_MAP[id].ip) || v.addr,
-        alcanzable: !!v.reachable, lider: !!v.leader
+        alcanzable: !!v.reachable, lider: !!v.leader, con_voto: !!v.voter
     }));
     const alcanzables = nodos.filter(n => n.alcanzable).length;
+    const votantes = nodos.filter(n => n.con_voto);
     const lider = nodos.find(n => n.lider);
-    return { total: nodos.length, alcanzables, hay_quorum: alcanzables >= Math.floor(nodos.length / 2) + 1, lider: lider ? lider.nombre : 'ninguno', nodos };
+    return { total: nodos.length, alcanzables, votantes: votantes.length, hay_quorum: votantes.filter(n => n.alcanzable).length >= Math.floor(votantes.length / 2) + 1, lider: lider ? lider.nombre : 'ninguno', nodos };
 }
 
 // Esquema cacheado (columnas + filas) que se inyecta en el system prompt.

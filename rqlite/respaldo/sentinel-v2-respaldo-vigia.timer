@@ -1,0 +1,7 @@
+[Unit]
+Description=Sentinel v2 - revisar cada 6 h que el respaldo de rqlite siga saliendo
+[Timer]
+OnBootSec=20min
+OnUnitActiveSec=6h
+[Install]
+WantedBy=timers.target

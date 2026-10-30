@@ -12,11 +12,11 @@ de memoria.
 
 | Nodo | Unidad | Estado en el rescate |
 |---|---|---|
-| `sentinel014` (node6, 192.168.1.250) | `rqlited.service` | enabled |
+| `sentinel014` (node6, 192.168.0.21) | `rqlited.service` | enabled |
 | | `rpa-extron-cycle.service` | static — lo dispara el timer |
 | | `rpa-extron-cycle.timer` | enabled |
 | | `rpa-extron-dashboard.service` | enabled |
-| `sentinel016` (node7, 192.168.1.91) | `rqlited.service` | enabled |
+| `sentinel016` (node7, 192.168.0.159) | `rqlited.service` | enabled |
 
 Todas son unidades de **usuario** (`~/.config/systemd/user/`), no de sistema.
 
