@@ -1,0 +1,23 @@
+{
+ "fuente": "velas",
+ "nivel_evaluado": "intro",
+ "nivel_confirmado": false,
+ "activos": 51,
+ "fuera": [],
+ "puerta_segundos": {},
+ "toma_ganancia_pasan": {
+  "TM": 0,
+  "TT": 0
+ },
+ "toma_ganancia_pasan_variante_volumen": 0,
+ "toma_ganancia_combinaciones": {
+  "TM": 1428,
+  "TT": 1428
+ },
+ "toma_ganancia_lista": [],
+ "toma_ganancia_nivel_necesario": {},
+ "ventana_utc": [
+  1791398340,
+  1793990340
+ ]
+}
