@@ -1,0 +1,74 @@
+{
+ "fuente": "trades",
+ "nivel_evaluado": "intro",
+ "nivel_confirmado": false,
+ "activos": 51,
+ "fuera": [],
+ "puerta_segundos": {
+  "TT": {
+   "combinaciones": 255,
+   "pasan": 0,
+   "robustas": 0,
+   "mejor": {
+    "product_id": "BIRB-USD",
+    "h_s": 60,
+    "rho_decide": 0.503181257289075,
+    "sigma_bps": 51.7665138773997,
+    "U_bps": 181.63471241170458
+   },
+   "lista": []
+  },
+  "MT": {
+   "combinaciones": 255,
+   "pasan": 0,
+   "robustas": 0,
+   "mejor": {
+    "product_id": "BIRB-USD",
+    "h_s": 60,
+    "rho_decide": 0.3913632001137244,
+    "sigma_bps": 51.7665138773997,
+    "U_bps": 141.2714429868811
+   },
+   "lista": []
+  },
+  "TM": {
+   "combinaciones": 255,
+   "pasan": 0,
+   "robustas": 0,
+   "mejor": {
+    "product_id": "BIRB-USD",
+    "h_s": 60,
+    "rho_decide": 0.38978988071628257,
+    "sigma_bps": 51.7665138773997,
+    "U_bps": 140.70351758793896
+   },
+   "lista": []
+  }
+ },
+ "toma_ganancia_pasan": {
+  "TM": 0,
+  "TT": 0
+ },
+ "toma_ganancia_pasan_variante_volumen": 0,
+ "toma_ganancia_combinaciones": {
+  "TM": 2244,
+  "TT": 2244
+ },
+ "toma_ganancia_lista": [],
+ "toma_ganancia_nivel_necesario": {},
+ "ventana_utc": [
+  1791398340,
+  1793990340
+ ],
+ "descarga_fin": {
+  "fin": "2026-11-07T01:16:32Z",
+  "pendientes": 0,
+  "stats": {
+   "peticiones": 35467,
+   "reintentos": 2,
+   "http429": 0,
+   "errores": 0
+  },
+  "trades": 51166000
+ }
+}

@@ -1,0 +1,121 @@
+{
+  "_que_es": "Parametros de la F0 del estudio de volatilidad en Coinbase. Se congelan ANTES de mirar los datos de la F1: cambiar un umbral despues de ver el resultado invalida la puerta. Cualquier cambio se anota en 'historial'.",
+  "version": 3.1,
+  "congelado": "2026-11-06",
+  "historial": [
+    "2026-11-06 v1: creado a partir del plan del 2026-11-02 (comisiones verificadas ese dia en las paginas oficiales).",
+    "2026-11-06 v2: tras la revision adversarial del codigo, ANTES de correr el analisis completo (los revisores si vieron cifras parciales de 12 de 51 activos). (a) La puerta tambien calcula rho_req con el factor EMPIRICO de las colas reales de cada activo y decide con el mas favorable de los dos: el factor normal resulto un 15-75 % pesimista con curtosis de 8-33. (b) TM se evalua aparte: no cuesta lo mismo que MT (0,4 % mas barato). Los dos cambios solo pueden hacer la puerta mas permisiva, nunca mas estricta.",
+    "2026-11-06 v3: seccion f1b nueva, a pedido del dueno DESPUES de ver la F1: la ventana real de su operativa es <= 1 min (normalmente ~20 s) y a veces se alargo hasta 5 h. La F1 (v2) no se toca. La f1b se congela ANTES de descargar ni mirar un solo trade y antes de correr la toma de ganancia sobre las velas (las velas si se vieron en la F1, pero solo a horizonte fijo). Lo unico aprendido de la F1 que entra como regla nueva es la robustez (quitar extremos y mitades), porque los dos 'pasa' de la F1 dependian de un solo episodio.",
+    "2026-11-06 v3.1: tras la revision adversarial del codigo F1b (5 revisores + 2 verificadores por hallazgo + recalculo independiente, que cuadro al decimal). Ya se habian visto: la toma de ganancia con velas de los 51 activos (no-go) y una prueba con trades de BNB y PONS (no-go). Cambios, todos en contra de la estrategia o neutros, y ninguno de una regla de decision: (a) ask/bid coherentes: el lado que no opera se mueve con el que si (conserva el ultimo spread visto) y, si su ultima observacion tiene mas de lado_fresco_max_s, se reancla al lado fresco con el spread mediano completo; nunca cruzados (antes cada lado se arrastraba por su cuenta hasta 60 s y en PONS el 20 % de los segundos tenia ask < bid, a favor de la estrategia). (b) Variante informativa del llenado con volumen (nocional_variante_volumen_usd en un mismo segundo); la regla que decide sigue siendo 'cualquier tamano'. (c) Exploratorio de impulso: disparo sobre el ask con compra taker en ese segundo y solo el primer disparo de cada episodio. (d) Descarga: paginas validadas (ids < after y tramo cubierto) y la descarga solo se da por terminada si todo esta completo."
+  ],
+
+  "cuenta": {
+    "_nota": "Lo confirma el dueno en la pagina de comisiones de Coinbase Advanced. Mientras siga en null, la puerta se evalua con 'nivel_supuesto'.",
+    "region": "US",
+    "region_confirmada": false,
+    "nivel_real": null,
+    "nivel_supuesto": "intro",
+    "coinbase_one": null,
+    "promo_vip3": null
+  },
+
+  "comisiones": {
+    "_fuente": "https://www.coinbase.com/advanced-vip (CMS 2026-09-16, tabla US) y help.coinbase.com Coinbase Advanced fees (2026-09-30). Vigentes desde 2026-09-16.",
+    "verificadas": "2026-11-02",
+    "niveles": [
+      {"nivel": "intro",      "volumen_30d_usd": 0,        "maker": 0.0050, "taker": 0.0090},
+      {"nivel": "advanced_1", "volumen_30d_usd": 10000,    "maker": 0.0035, "taker": 0.0075},
+      {"nivel": "advanced_2", "volumen_30d_usd": 50000,    "maker": 0.0015, "taker": 0.0030},
+      {"nivel": "advanced_3", "volumen_30d_usd": 250000,   "maker": 0.0010, "taker": 0.0015},
+      {"nivel": "vip_1",      "volumen_30d_usd": 1000000,  "maker": 0.0006, "taker": 0.0010},
+      {"nivel": "vip_2",      "volumen_30d_usd": 5000000,  "maker": 0.0004, "taker": 0.0006},
+      {"nivel": "vip_3",      "volumen_30d_usd": 20000000, "maker": 0.0001, "taker": 0.0005}
+    ],
+    "_coinbase_one": "Reembolso del 25 % de la comision spot de Advanced (planes Preferred/Premium, con tope). Se informa como variante, no decide.",
+    "coinbase_one_reembolso": 0.25
+  },
+
+  "universo": {
+    "quote": "USD",
+    "_usdc": "Los X-USDC son alias del mismo libro que X-USD (verificado 2026-11-02): no se cuentan dos veces.",
+    "volumen_min_usd": 1000000,
+    "volumen_variante_usd": 500000,
+    "controles": ["BTC-USD", "ETH-USD"],
+    "estables": ["USDT", "USDC", "DAI", "PYUSD", "EURC", "EUROC", "GUSD", "FDUSD", "USDS", "TUSD", "USDP", "PAX", "BUSD",
+                 "UST", "LUSD", "FRAX", "RLUSD", "USD1", "EURT", "GYEN", "XSGD", "USDE", "SUSDE", "CUSD", "MUSD", "SUSD",
+                 "GHO", "CRVUSD", "USDD", "TGBP", "AUDD", "EUR", "GBP", "USD", "CAD", "AUD", "JPY", "SGD"]
+  },
+
+  "f1": {
+    "_que_es": "Puerta barata: velas de 1 min de 30 dias, con cotas FAVORABLES a la estrategia (coste = solo comision; salida en el maximo de la vela). Si ni asi aparece nada, el no-go es robusto.",
+    "dias": 30,
+    "peticiones_por_segundo": 1.0,
+    "fotos_libro_cada_min": 20,
+    "horizontes_min": [1, 2, 5, 15],
+    "_modos": "Patas [entrada, salida]. TM no cuesta igual que MT: pagar la comision alta al entrar sale 0,4 % mas barato.",
+    "modos": {"TT": ["taker", "taker"], "MT": ["maker", "taker"], "TM": ["taker", "maker"], "MM": ["maker", "maker"]},
+    "modos_que_deciden": ["TT", "MT", "TM"],
+    "_mm": "MM no se puede evaluar con velas (no hay bid/ask ni llenados): se informa y pasa siempre a la F2.",
+    "q_oraculo": [0.05, 0.01, 0.005],
+    "_regla": "Puerta preregistrada: rho_decide = min(rho_normal, rho_empirico) a q_puerta. En el nivel evaluado, un modo es NO-GO si TODAS sus combinaciones activo x horizonte tienen rho_decide > rho_umbral. Las que queden <= rho_umbral pasan a la F2.",
+    "q_puerta": 0.01,
+    "rho_umbral": 0.2,
+    "_factor_empirico": "E[Z | S en el q superior] / rho con S = rho*Z + sqrt(1-rho^2)*N(0,1), Z = retornos no solapados estandarizados del propio activo, rho = rho_umbral. Se divide por un control normal con el mismo n (quita el sesgo de muestra finita). Semillas = round(objetivo / k) acotado a [min, max], con k = q*n.",
+    "semillas_factor_empirico": {"objetivo": 10000, "min": 20, "max": 200},
+    "dias_minimos_por_activo": 7,
+    "capital_usd": 1000,
+    "montos_usd": [10, 50, 100, 250, 500, 750, 1000],
+    "presupuesto_slip_bps": 25,
+    "filtros_operable": {
+      "spread_mediano_max_bps": 30,
+      "minutos_sin_trade_max": 0.10,
+      "profundidad_min_usd": 2000,
+      "profundidad_banda_bps": 25
+    }
+  },
+
+  "f1b": {
+    "_que_es": "Segundos y toma de ganancia. Misma ventana y mismo universo que la F1 (se leen de f1.sqlite). Fuente: trades historicos publicos de Exchange (/products/{id}/trades, paginados hacia atras por trade_id), agregados a una rejilla de 1 s. Tambien se corre la toma de ganancia sobre las velas de 1 min de la F1 como adelanto y control cruzado.",
+    "peticiones_por_segundo": 5.0,
+    "hilos": 6,
+    "_rps": "Limite publico de Exchange ~10 peticiones/s por IP; se usa la mitad porque la IP de casa es la de toda la flota (la captura de precios de la red esta pausada). Empezo en 3/s en serie, pero la latencia (~0,5 s) dejaba 1 pagina/s y ~14 h: se paso a 6 hilos con tope global de 5/s. Solo afecta a la velocidad de descarga, no al analisis.",
+    "trades_por_peticion": 1000,
+    "_lados": "En Exchange 'side' es el lado del MAKER: side=sell es un taker que COMPRA (al ask) y side=buy un taker que VENDE (al bid). El analisis comprueba con los datos que los side=sell salen mas caros que los side=buy del mismo segundo.",
+    "lado_fresco_max_s": 60,
+    "_lado_fresco": "ask = ultimo precio de un taker comprador; bid = ultimo de un taker vendedor. v3.1: el lado que no opera se mueve en la misma proporcion que el que si; si su ultima observacion tiene mas de lado_fresco_max_s, se reancla al otro lado con el spread mediano completo de las fotos del libro de la F1; nunca cruzados. Si nadie opero en lado_fresco_max_s: ultimo trade +/- medio spread.",
+
+    "puerta_segundos": {
+      "_regla": "La misma de la F1 v2 (rho_decide = min(normal, empirico) <= rho_umbral con q_puerta) a horizontes fijos en segundos, con el ultimo trade del segundo (cota favorable, como las velas). Un 'pasa' solo cuenta como ROBUSTO si tambien queda <= rho_umbral quitando las quitar_extremos ventanas de mayor |retorno| y en cada mitad de la ventana por separado.",
+      "horizontes_s": [5, 10, 20, 30, 60],
+      "quitar_extremos": 10
+    },
+
+    "toma_ganancia": {
+      "_que_es": "La operativa que describe el dueno: comprar, dejar una venta en un objetivo con ganancia neta y esperar; si no se llena en el plazo, vender a mercado. Sin senal: se entra en cualquier segundo (o minuto) con trade.",
+      "_modos": "TM = compra taker y venta LIMITE (maker) en el objetivo: es la forma natural. TT = compra taker y venta a mercado en cuanto el bid llega al objetivo. TT solo en el nivel evaluado.",
+      "modos": ["TM", "TT"],
+      "niveles": ["intro", "intro_coinbase_one", "advanced_1", "advanced_2", "advanced_3", "vip_1"],
+      "margen_neto_bps": [10, 25, 50, 100],
+      "_objetivo": "Objetivo = entrada * (1 + margen) * (1 + f_compra) / (1 - f_venta): si se llena, la ganancia neta es exactamente el margen. Llenado de la venta limite: algun taker comprador paga >= objetivo (cota favorable: sin cola). TT: algun taker vendedor cobra >= objetivo.",
+      "plazos_s": [5, 10, 20, 30, 60, 300, 900, 3600, 10800, 18000, null],
+      "plazos_min_velas": [1, 5, 15, 60, 180, 300, null],
+      "_sin_plazo": "null = esperar sin limite; lo que no se llena al final de la ventana se valora al bid final y cuenta como atascado.",
+      "_regla": "Simulacion secuencial: $1000, una posicion a la vez, se reinvierte todo y se vuelve a entrar en el siguiente segundo con trade. Una combinacion activo x nivel x modo x margen x plazo PASA si, en CADA mitad de la ventana simulada por separado (empezando con $1000), el capital final supera $1000 Y supera a comprar-y-mantener esa mitad (compra y venta taker), con >= min_operaciones_por_mitad operaciones cerradas. Decide el nivel evaluado de la cuenta; los demas niveles dicen cual haria falta.",
+      "min_operaciones_por_mitad": 30,
+      "nocional_variante_volumen_usd": 1000,
+      "_variante_volumen": "v3.1, informativa: la venta limite solo se da por llenada si en un mismo segundo los takers compradores pagan >= objetivo por al menos este nocional. Es una cota en contra (no suma segundos); la regla que decide (cualquier tamano) es la cota a favor. La verdad queda entre las dos.",
+      "entradas_solapadas_cada_s": 10,
+      "_solapadas": "Las tasas de acierto, el tiempo hasta el objetivo y el resultado medio por operacion se miden entrando cada 10 s (todas las entradas posibles, solapadas): informan, no deciden.",
+      "cortes_tiempo_s": [5, 10, 20, 30, 60, 120, 300, 900, 3600, 10800, 18000],
+      "_cortes": "Para la afirmacion 'el suceso es mas probable en menos tiempo': se informa la fraccion de entradas que llegan al objetivo antes de cada corte y la DENSIDAD por segundo en cada tramo entre cortes (si la afirmacion es cierta, la densidad es mayor en los tramos cortos)."
+    },
+
+    "exploratorio_impulso": {
+      "_nota": "NO decide: con muchas variantes alguna sale bien por azar. Entrar solo despues de que el precio ya subio subida_bps en los ultimos ventana_s segundos (el 'suceso' ya empezado) y luego la misma toma de ganancia TM en el nivel evaluado.",
+      "ventana_s": 5,
+      "subida_bps": [25, 50, 100],
+      "plazos_s": [20, 60, 300],
+      "margen_neto_bps": [10, 25]
+    }
+  }
+}
