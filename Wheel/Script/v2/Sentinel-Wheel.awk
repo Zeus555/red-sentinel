@@ -64,6 +64,36 @@ function WheelAlcanzable(ip,   c,resp,l,n,i,tr){
 	return -1
 }
 
+function Recoger(ip,   t0,txt,nm,mm){
+	# Sondea un candidato y guarda sus datos. Cuenta NODOS, no direcciones: si el
+	# mismo nombre contesta por dos IP (uno mismo por 127.0.0.1 y por la de LAN)
+	# solo cuenta una vez. Contar direcciones hacia que cada nodo se viera a si
+	# mismo dos veces y el quorum pasaba viendo 5 de 11.
+	t0 = systime()
+	txt = Prueba(ip)
+	if (txt !~ /nombre/) { if (debug==1) printf "[wheel] %s no responde\n", ip; SinResp = SinResp " " ip; return }
+	nm = Campo(txt,"nombre")
+	if (nm=="") return
+	Vivo[ip] = nm
+	if (nm in Ip) return                  # ya contado por otra direccion
+	# El RTT se saca del propio curl (-w). Si no llega, se estima con systime.
+	if (match(txt,/RTT:([0-9.]+)/,mm)) Rtt[nm] = mm[1] * 1000
+	else Rtt[nm] = (systime() - t0) * 1000
+	Ip[nm]       = ip
+	Elegible[nm] = Campo(txt,"elegible") + 0
+	EsWheel[nm]  = Campo(txt,"wheel") + 0
+	Uptime[nm]   = Campo(txt,"uptime") + 0
+	Temp[nm]     = Campo(txt,"temp") + 0
+	Carga[nm]    = Campo(txt,"carga") + 0
+	Inflight[nm] = Campo(txt,"inflight") + 0
+	MaxJ[nm]     = Campo(txt,"maxjobs") + 0
+	Queued[nm]   = Campo(txt,"queued") + 0
+	MaxQ[nm]     = Campo(txt,"maxqueue") + 0
+	Estable[nm]  = Campo(txt,"estable") + 0
+	Fuente[nm]   = Campo(txt,"fuente_temp")
+	vivos++
+}
+
 function Campo(txt,clave,   m){
 	if (match(txt, "\042" clave "\042[ ]*:[ ]*\042([^\042]*)\042", m)) return m[1]
 	if (match(txt, "\042" clave "\042[ ]*:[ ]*(-?[0-9.]+)", m)) return m[1]
@@ -105,8 +135,13 @@ function Puntuar(n,   s,up,tmp,car,ocu,col,rtt,lim,base){
 	s -= ocu * 20
 	col = Queued[n]; if (col > 0) s -= col * 2
 
-	# Lentitud en responder, medida por quien puntua.
-	rtt = Rtt[n]; if (rtt > 0) s -= rtt / 50
+	# La LENTITUD en responder ya NO puntua (2026-11-09). La media cada nodo desde
+	# donde esta, asi que la misma red daba puntuaciones distintas segun quien
+	# contara, y uno mismo se media por 127.0.0.1 a ~0 ms frente a decenas de ms de
+	# los demas por la WiFi. Con 014 y 016 a menos de 2 puntos, esa ventaja propia
+	# bastaba para que cada uno se eligiera a si mismo: del 31/10 al 06/11 hubo dos
+	# Wheels a la vez. Todo lo que queda sale de /fitness, que es igual para todos,
+	# y por eso todos llegan al mismo ganador. El RTT sigue en el debug.
 
 	# Histeresis: el Wheel actual parte con ventaja. Sin esto, dos nodos
 	# parecidos se turnarian el mando cada pocos minutos, que es justo lo que
@@ -158,7 +193,9 @@ BEGIN {
 		close(c)
 		nrq=0
 		while (match(resp, /([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/, mm)){
-			Cand[mm[1]] = 1; DeRqlite[mm[1]] = 1; nrq++
+			# Cada nodo sale dos veces (api_addr y addr): se cuentan direcciones distintas.
+			if (!(mm[1] in DeRqlite)) nrq++
+			Cand[mm[1]] = 1; DeRqlite[mm[1]] = 1
 			resp = substr(resp, RSTART+RLENGTH)
 		}
 		if (debug==1) printf "[wheel] rqlite aporto %d candidatos\n", nrq
@@ -185,31 +222,24 @@ BEGIN {
 	if ((getline lm < MissFile) > 0) fallos = lm+0
 	close(MissFile)
 
-	# Recoger /fitness de cada candidato.
+	# Recoger /fitness de cada candidato. Uno mismo se sondea por su IP de LAN, que
+	# es como lo ven los demas; 127.0.0.1 queda solo de respaldo, para cuando esa
+	# IP no figura en la lista o no contesta (rqlite caido y peers.tsv sin ella).
 	vivos=0
-	for (ip in Cand){
-		t0 = systime()
-		txt = Prueba(ip)
-		if (txt !~ /nombre/) { if (debug==1) printf "[wheel] %s no responde\n", ip; SinResp = SinResp " " ip; continue }
-		nm = Campo(txt,"nombre")
-		if (nm=="") continue
-		# El RTT se saca del propio curl (-w). Si no llega, se estima con systime.
-		if (match(txt,/RTT:([0-9.]+)/,mm)) Rtt[nm] = mm[1] * 1000
-		else Rtt[nm] = (systime() - t0) * 1000
-		Ip[nm]       = ip
-		Vivo[ip]     = nm
-		Elegible[nm] = Campo(txt,"elegible") + 0
-		EsWheel[nm]  = Campo(txt,"wheel") + 0
-		Uptime[nm]   = Campo(txt,"uptime") + 0
-		Temp[nm]     = Campo(txt,"temp") + 0
-		Carga[nm]    = Campo(txt,"carga") + 0
-		Inflight[nm] = Campo(txt,"inflight") + 0
-		MaxJ[nm]     = Campo(txt,"maxjobs") + 0
-		Queued[nm]   = Campo(txt,"queued") + 0
-		MaxQ[nm]     = Campo(txt,"maxqueue") + 0
-		Estable[nm]  = Campo(txt,"estable") + 0
-		Fuente[nm]   = Campo(txt,"fuente_temp")
-		vivos++
+	for (ip in Cand) if (ip != "127.0.0.1") Recoger(ip)
+	if (!(Self in Ip)) Recoger("127.0.0.1")
+
+	# Mi IP de LAN, recordada de cuando contesto por ella. Sirve para no contarla
+	# como "otro nodo que no contesta" el dia que solo me alcanzo por 127.0.0.1: si
+	# no, el denominador me contaba dos veces y con 6 de 11 no se decidia.
+	SelfFile = State ".self"
+	MiIp = ""
+	if ((getline MiIp < SelfFile) > 0) gsub(/[[:space:]]/,"",MiIp)
+	close(SelfFile)
+	if ((Self in Ip) && Ip[Self] != "127.0.0.1" && Ip[Self] != MiIp){
+		MiIp = Ip[Self]
+		print MiIp > SelfFile
+		close(SelfFile)
 	}
 
 
@@ -231,8 +261,26 @@ BEGIN {
 	# ser el mismo, y se autoproclama. Pasa justo despues de un reinicio masivo
 	# del estado: varios nodos se coronaron a la vez y llegaron avisos duplicados
 	# de cuatro "Wheels" distintos (visto el 2026-08-15).
-	totalCand=0
-	for (ip in Cand) if (ip != "127.0.0.1") totalCand++
+	# El denominador tambien cuenta NODOS: los que contestaron, una vez por nombre,
+	# mas cada direccion que no contesto. Y uno mismo siempre cuenta, figure o no
+	# su IP de LAN en la lista. Asi "mas de la mitad" es de verdad mas de la mitad
+	# de la flota: con 11 nodos hace falta ver a 6, uno mismo incluido.
+	totalCand=0; selfLan=0
+	for (ip in Cand){
+		if (ip == "127.0.0.1") continue
+		if (ip == MiIp && !(ip in Vivo)) continue   # soy yo: ya cuento abajo
+		if (ip in Vivo){
+			if (Vivo[ip] in Contado) continue
+			Contado[Vivo[ip]] = 1
+			if (Vivo[ip] == Self) selfLan = 1
+		}
+		totalCand++
+	}
+	# Si mi IP de LAN figura pero no contesta y nunca la he visto (sin .self), cuenta
+	# como "no vista" y yo como uno mas: el quorum sale un punto mas exigente, nunca
+	# mas laxo.
+	if (!selfLan) totalCand++
+	if (debug==1) printf "[wheel] veo %d nodos distintos de %d\n", vivos, totalCand
 
 	# Caso peor: no veo a NADIE mas que a mi. Es indistinguible de estar aislado,
 	# asi que solo me corono si la red aun no tiene Wheel (arranque en frio). Si
@@ -287,7 +335,9 @@ BEGIN {
 			print 0 > MissFile      # volvio a dar señales: contador a cero
 			close(MissFile)
 		}
-		if (anterior in Ip){        # recordar donde vive, para poder preguntar por el
+		# Recordar donde vive, para poder preguntar por el. Nunca 127.0.0.1: rqlite
+		# no la conoce, y con ella la corroboracion no tendria a quien preguntar.
+		if ((anterior in Ip) && Ip[anterior] != "127.0.0.1"){
 			print Ip[anterior] > IpFile
 			close(IpFile)
 		}
@@ -334,8 +384,8 @@ BEGIN {
 	mejor=""; mejorPts=-1
 	for (nm in Ip){
 		p = Puntuar(nm)
-		if (debug==1) printf "[wheel] %-14s pts=%.1f up=%ds temp=%s carga=%s ocup=%s/%s cola=%s estable=%s eleg=%s\n", \
-			nm, p, Uptime[nm], Temp[nm] "(" Fuente[nm] ")", Carga[nm], Inflight[nm], MaxJ[nm], Queued[nm], Estable[nm], Elegible[nm]
+		if (debug==1) printf "[wheel] %-14s pts=%.1f up=%ds temp=%s carga=%s ocup=%s/%s cola=%s estable=%s eleg=%s wheel=%s rtt=%dms (no puntua) ip=%s\n", \
+			nm, p, Uptime[nm], Temp[nm] "(" Fuente[nm] ")", Carga[nm], Inflight[nm], MaxJ[nm], Queued[nm], Estable[nm], Elegible[nm], EsWheel[nm], Rtt[nm], Ip[nm]
 		if (p < 0) continue
 		if (p > mejorPts || (p == mejorPts && nm < mejor)){ mejor=nm; mejorPts=p }
 	}

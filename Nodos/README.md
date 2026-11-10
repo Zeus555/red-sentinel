@@ -940,6 +940,59 @@ cómo restaurar: [`rqlite/README.md`](../rqlite/README.md#respaldo-diario).
 - Comprobar: `curl -G 192.168.0.21:4001/db/query --data-urlencode "q=SELECT * FROM
   sentinel_respaldo ORDER BY ts DESC LIMIT 3"`.
 
+## Servicio 10: Avisos de la red y latido a la EC2
+
+Alta 2026-11-09. Por qué y cómo se decidió: [`ROLLOUT_v2.md`](../ROLLOUT_v2.md),
+«Avisos sin puntos ciegos y quórum por nodos».
+
+**Dentro de casa: `Sentinel-Alert.sh`**, solo en el Wheel, cada 5 min (cron en
+Termux, timer `sentinel-v2-alert` en Ubuntu). Vigila que cada nodo responda, que
+rqlite tenga líder y alcance el rqlited de cada uno, que siga llegando la
+telemetría de cada nodo vivo, los equipos sin agente de `EXTRA_CHECKS`
+(sentinel020) y la batería. Avisa al pasar a mal, al volver y con un recordatorio
+cada 24 h.
+
+- Ficheros en el Wheel (`~/PRC_Sentinel/v2/`): `alert.state` (estado, 7 campos),
+  `alert.log` (cada envío con su resultado; `FALLO` = se reintentará).
+- Claves de `sentinel.conf`, **iguales en todos los nodos** (cualquiera puede ser
+  Wheel): `EXTRA_NODES`, `SKIP_NODES`, `GRACE_NODES` (laptop y 020 a 1800 s),
+  `EXTRA_CHECKS`, `DATOS_TEMP_MAX_MIN`, `DATOS_BAT_MAX_MIN`, `RQ_GRACIA`,
+  `RECORDATORIO_H`. Ver `Sentinel-Node.conf.example`.
+- Probar sin enviar ni tocar el estado real: copiar **con `cp -p`** `sentinel.conf`,
+  `fleet.token`, `wheel.state`, `alert.state` y `peers.tsv` a un directorio
+  temporal y ejecutar `DRY=1 WHEEL_SETTLE=0 SENTINEL_NOJITTER=1 SENTINEL_BASE=<ese dir> sh Sentinel-Alert.sh`.
+  Sin `-p` el `wheel.state` copiado parece recién coronado y la pasada calla; en
+  DRY el script dice siempre por qué no pasa. Los datos parados tienen 2 pasadas de
+  gracia, así que una sola pasada en seco no los enseña todavía.
+- Banco: `sh Sentinel-Selftest-Avisos.sh` (mejor en sentinel014: ~1 min).
+- Por qué no llegó un aviso: `grep FALLO alert.log` en el Wheel; desde fuera,
+  `SELECT * FROM sentinel_vigia` (hora de la última pasada y `pendientes`).
+
+**Desde fuera: latido a la EC2.** Cubre lo que el Wheel no puede ver desde dentro:
+apagón, internet caído o el Wheel con el cron parado.
+
+- En **sentinel014 y sentinel016**: llave `~/.ssh/sentinel_latido` (ed25519, sin
+  frase), `LATIDO_DESTINO=ubuntu@<la EC2>` en `sentinel.conf`, la huella de la EC2
+  en `~/.ssh/known_hosts` y el timer `sentinel-v2-latido` (`Sentinel-Latido.sh`).
+- En la **EC2**, `~/sentinel-latido/`: `latido-recibir.sh`, `latido-vigilar.sh`,
+  `telegram.conf` (600; `BOT_TOKEN` y `CHAT_ID` del thermal-guard) y lo que va
+  escribiendo (`sentinelNNN.latido`, `vigilar.state`, `vigilar.log`).
+- `authorized_keys` de la EC2, una línea por mini-PC; la llave no abre shell ni
+  reenvía puertos, y el nombre del nodo lo fija la línea:
+  `restrict,command="/home/ubuntu/sentinel-latido/latido-recibir.sh sentinel014" ssh-ed25519 AAAA... sentinel014-latido`
+- Cron de la EC2: `*/5 * * * * $HOME/sentinel-latido/latido-vigilar.sh`.
+- Orden al montarlo: primero el `Sentinel-Alert.sh` nuevo en el Wheel (crea
+  `sentinel_vigia`), luego el timer de latido de 014 y 016, y por último el cron de
+  la EC2. La EC2 da de margen 15 min sin ningún latido y 40 min sin ninguna pasada
+  antes de avisar, así que el orden no genera avisos falsos, pero así se prueba
+  cada pieza con la anterior ya en marcha.
+- Avisa (prefijo «Sentinel (desde la EC2)») si no llega ningún latido en 15 min,
+  si la última pasada de los avisos tiene más de 40 min o si el Wheel lleva 10 min
+  sin poder mandar a Telegram.
+- Comprobar: `ssh batchtoday 'cat ~/sentinel-latido/*.latido ~/sentinel-latido/vigilar.state'`
+  (cada `.latido`: recibido, nodo, última pasada, Wheel, pendientes, readyz).
+- Si se cambia el bot de Telegram, actualizar también `telegram.conf` de la EC2.
+
 ## Credenciales de Bright Data
 
 Qué ficheros guardan cada credencial y cómo comprobarlas está en una nota privada

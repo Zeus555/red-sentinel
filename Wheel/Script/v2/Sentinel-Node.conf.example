@@ -63,7 +63,31 @@ SKIP_NODES=192.168.0.218
 # y sigue avisando de una caida real dentro de la media hora. Sin entrada aqui,
 # un nodo se declara caido en cuanto falla el sondeo (que es lo que se quiere para
 # los que estan siempre encendidos).
-GRACE_NODES=192.168.0.209:1800
+GRACE_NODES=192.168.0.209:1800,192.168.0.79:1800
+
+# >>> avisos (Sentinel-Alert.sh, solo el Wheel) >>>
+# Equipos de la red que NO llevan agente Sentinel y aun asi hay que vigilar:
+# nombre=tcp://ip:puerto (vale con que acepte la conexion) o nombre=http(s)://...
+# (vale cualquier respuesta, incluido 401; un servicio que pide certificado de
+# cliente, como el 8443 de stunnel, con tcp://), separados por comas. La tolerancia va
+# por IP en GRACE_NODES: sentinel020 es un Windows que se reinicia con las
+# actualizaciones, de ahi su 1800. Debe estar en TODOS los nodos, como los demas.
+EXTRA_CHECKS=sentinel020=tcp://192.168.0.79:22
+# Minutos sin temperatura (thermal-guard) o sin bateria (Sentinel-Bateria.sh) de un
+# nodo que SI responde antes de avisar. En Termux los dos van por cron, asi que esto
+# es lo que delata un cron muerto: el agente sigue contestando y parecia sano.
+DATOS_TEMP_MAX_MIN=20
+DATOS_BAT_MAX_MIN=20
+# Segundos que rqlite puede estar sin lider (o el rqlited de un nodo fuera del
+# cluster) antes de avisar. 240 = dos pasadas seguidas.
+RQ_GRACIA=240
+# Horas entre recordatorios de lo que siga mal (nodo caido, datos parados...).
+# 0 = sin recordatorio (solo el aviso al caer y al volver).
+RECORDATORIO_H=24
+# Latido a la EC2 (Sentinel-Latido.sh): usuario@host. SOLO en sentinel014 y
+# sentinel016, que son los que tienen la llave; vacio = no se manda nada.
+LATIDO_DESTINO=
+# <<< avisos <<<
 
 # >>> nodo movil (roaming) >>>
 # SOLO para equipos que cambian de red a diario: hoy sentinel019, el movil
