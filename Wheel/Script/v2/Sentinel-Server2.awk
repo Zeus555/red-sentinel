@@ -132,7 +132,15 @@ function Metricas(   now,c,t,l,resp,m){
 	now=systime()
 	if (now - MetRead < 10) return
 	MetRead=now
-	MetTemp=-1; MetTempSrc="ninguna"
+	MetTemp=-1; MetTempSrc="ninguna"; MetLoad=0
+
+	# En Windows no hay sensor que leer, y /proc/loadavg lo emula la capa MSYS de
+	# git-bash a un precio enorme: 1-2 s de CPU de sistema por lectura (medido el
+	# 10/11/2026 en sentinel013: /fitness 1,0-1,2 s frente a 1,5 ms de /version).
+	# El sondeo de 5 min siempre llega con la cache fria, asi que cada uno pagaba
+	# ese segundo con el aceptador monohilo bloqueado. Carga 0 es neutra para el
+	# elector (solo resta si es > 0) y la laptop no es elegible de todos modos.
+	if (OS=="Windows") return
 
 	# El JSON de termux-battery-status puede venir en UNA sola linea. Hay que
 	# extraer el campo, no limpiar la linea entera: si no, "percentage":100 y
@@ -149,7 +157,6 @@ function Metricas(   now,c,t,l,resp,m){
 		close("/sys/class/thermal/thermal_zone0/temp")
 	}
 
-	MetLoad=0
 	if ((getline l < "/proc/loadavg") > 0){ split(l,ll," "); MetLoad=ll[1]+0 }
 	close("/proc/loadavg")
 }

@@ -936,6 +936,27 @@ mismo patrón que el watchdog del v1, pero para un proceso en vez de veinte.
   pueden reconfigurar por script.
 - **Probado**: se mató el agente, se ejecutó la tarea y volvió (`Last Result: 0`).
 
+**Corrección del 10/11/2026: una sola copia.** El `.cmd` original hacía un único
+`curl` de 3 s a `/version` (sin token) y, si fallaba, lanzaba otro agente **sin
+mirar si ya había uno**. El viejo no estaba muerto, solo ocupado, y como gawk
+cierra y reabre el socket de escucha en cada petición, las copias se turnaban el
+8181. Se encontraron **10 copias** (del 19/10 al 09/11), cada una con su elector.
+Ahora el `.cmd` solo llama a `service/sentinel-windows.sh`, que:
+
+- sondea `/version` **con** token (por stdin, fuera de argv) y dos veces con margen;
+- si no contesta, quita el agente **por PID**: el de `sentinel.pid` (lo escribe al
+  lanzar) o el que tiene el puerto según `netstat`, comprobando antes por `/proc`
+  que es este agente;
+- **no lanza** si el puerto lo tiene otro proceso o si queda vivo cualquier otro
+  agente: lo deja escrito en `server.log` (`[vigilante] ...`) para matarlo a mano;
+- `SENTINEL_DRYRUN=1` recorre la decisión y dice lo que haría sin tocar nada.
+
+Probados los cuatro caminos (lanzar, sano, colgado con `kill -STOP`, puerto ajeno).
+La tarea programada no cambió. Aparte, `/fitness` tardaba 1,0-1,2 s en Windows
+porque la capa MSYS emula `/proc/loadavg` a 1-2 s por lectura: `Metricas()` ya no
+lee nada en Windows (temp -1, carga 0, neutra; la laptop no es elegible). Desde
+sentinel016: 30/30 respuestas, máximo 60 ms (antes 1,3-1,7 s).
+
 Consecuencia asumida: al depender del inicio de sesión, el Wheel Windows solo
 está disponible cuando hay sesión iniciada — otra razón para que **no sea
 elegible** como coordinador.
