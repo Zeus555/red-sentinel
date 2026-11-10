@@ -85,7 +85,7 @@ say "codigo copiado a $BASE"
 # Se copian, pero NO se les pone cron: activarlos es un paso deliberado (ver el
 # resumen del final), igual que arrancar el servicio.
 TRABAJOS=""
-for f in Sentinel-Cripto.sh Sentinel-Libro.sh Sentinel-Profundidad.sh Sentinel-Alert.sh Sentinel-Bateria.sh; do
+for f in Sentinel-Cripto.sh Sentinel-Libro.sh Sentinel-Profundidad.sh Sentinel-Alert.sh Sentinel-Bateria.sh Sentinel-Latido.sh; do
   if [ -f "$SRC/$f" ]; then
     do_ "cp -f '$SRC/$f' '$BASE/$f'"
     do_ "chmod +x '$BASE/$f'"

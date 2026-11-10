@@ -806,6 +806,92 @@ desacuerdo.
 mismo y ya hay Wheel (sentinel016): no lo toco»* y no cambia nada. En la flota,
 **exactamente un nodo** se cree Wheel y los demás callan.
 
+## Avisos sin puntos ciegos y quórum por nodos (2026-11-09)
+
+La revisión del 30/10 dejó dos frentes: la elección contaba mal y los avisos solo
+miraban si el agente contestaba. Lo que se midió en vivo antes de tocar nada:
+
+- **Dos Wheels del 31/10 al 06/11.** 016 se creía Wheel desde el 31/10 mientras
+  014 seguía avisando como tal. Los nodos fueron cambiando de 014 a 016 en fechas
+  distintas (del 06/11 02:06 al 08/11 22:10), y 019 cambió de Wheel 15 veces en
+  tres días.
+- **sentinel017 llevaba 16 h sin cron** (sin temperatura, sin batería, sin
+  elección) y los avisos lo daban por sano, porque su agente sí contestaba.
+
+### Elección (`Sentinel-Wheel.awk`)
+
+1. **Cada nodo se contaba dos veces**: se sondeaba por `127.0.0.1` y por su IP de
+   LAN, y `vivos` contaba direcciones. Con 11 nodos bastaba verse a sí mismo y a
+   otros 4 para pasar el quórum, y la guarda «solo me veo a mí mismo» no saltaba
+   nunca (contaba 2). Ahora se cuentan **nombres**: uno mismo se sondea por su IP
+   de LAN y `127.0.0.1` queda de respaldo; el denominador cuenta nodos y uno mismo
+   siempre está en él. Con 11 hacen falta 6.
+2. **El RTT ya no puntúa.** Lo medía cada nodo desde donde estaba, así que la
+   misma red daba puntuaciones distintas según quién contara, y uno mismo se medía
+   por loopback a ~0 ms. 014 y 016 están a menos de 2 puntos sin contar la
+   histéresis: esa ventaja propia bastaba para que cada uno se eligiera. Todo lo
+   que queda sale de `/fitness`, igual para todos, así que todos llegan al mismo
+   ganador. El RTT sigue en el `debug`.
+
+### Avisos (`Sentinel-Alert.sh`)
+
+Un motor común (awk dentro del script) decide para todo lo vigilado: tolerancia,
+transición, recordatorio y reintento. Cada cosa tiene su clave en `alert.state`
+(`clave|nombre|estado|desde|ult_aviso|visto|ok_desde`; se lee el formato viejo
+de 3-4 campos y `bat.state` se importa una vez):
+
+| Clave | Qué mira | Cuándo avisa |
+|---|---|---|
+| `IP` | el agente da un `/fitness` válido (un 401 cuenta como caído, y se dice) | 2 sondeos fallidos (o pasada la tolerancia de `GRACE_NODES`) |
+| `__cl__` | `/readyz` del rqlite del propio Wheel | 2 pasadas sin líder (`RQ_GRACIA=240`); la vuelta también pide 2 buenas |
+| `rq:IP` | `/nodes` dice que el clúster no alcanza su rqlited (por `addr`: un nodo inalcanzable no trae `api_addr`) | igual que `__cl__`; solo si su agente responde y mi rqlite tiene líder |
+| `dt:nombre` | `MAX(ts)` de `sentinel_temp` y `sentinel_bateria` | >20 min sin datos con el agente vivo (= cron parado en Termux), con 2 pasadas de gracia (`DATOS_GRACIA=600`) |
+| `ex:nombre` | `EXTRA_CHECKS` (hoy sentinel020 por el 22) | 2 sondeos fallidos, con su tolerancia por IP |
+| `bt:nombre` | enchufado perdiendo carga (filas de las últimas 2 h; un sensor que da 0 % y `UNKNOWN` no cuenta) | igual que antes |
+
+- **Si Telegram falla, no se da por avisado.** Solo cuenta un HTTP 200 con
+  `"ok":true`; si no, esas claves se guardan como estaban y la pasada siguiente
+  lo reintenta. Cada intento queda en `alert.log`.
+- **Recordatorio cada 24 h** (`RECORDATORIO_H`) mientras algo siga mal: la caída
+  de diez días de 017 se anunció una sola vez.
+- **Sin falsas alarmas en cadena**: los datos solo se miran con mi rqlite con
+  líder y si el dato más reciente de los nodos está al día (si no, es la base y no
+  cada nodo); el rqlited de cada uno, solo si mi rqlite tiene líder; y un nodo que
+  acaba de volver de una caída no se juzga por sus datos hasta la pasada siguiente.
+- **Cerrojo** (`.alert.lock`): con muchos nodos caídos una pasada puede pasar de
+  5 min y dos a la vez se pisarían el estado. Una señal (Ctrl-C, `systemctl stop`)
+  sale sin tocar `alert.state`, y si el motor falla tampoco se escribe.
+- **`DRY=1`** imprime y no guarda nada: ni estado ni latido.
+- **Latido**: al terminar, el Wheel escribe `sentinel_vigia(clave='avisos', ts,
+  wheel, pendientes)`.
+
+### Desde fuera: latido a la EC2
+
+Nada de dentro de casa puede avisar de un apagón, ni de un Wheel con el cron
+parado. `Sentinel-Latido.sh` (timer en 014 y 016) lleva cada 5 min a la EC2 la
+fila de `sentinel_vigia`, por SSH con una llave que solo sirve para eso. En la
+EC2, `latido-vigilar.sh` (cron) avisa si no llega ningún latido en 15 min (luz,
+internet o los dos mini-PC), si los avisos llevan más de 40 min sin pasar (un
+relevo normal de Wheel deja hasta ~30 min sin pasadas), o si el Wheel lleva
+10 min sin poder mandar a Telegram. El latido lleva también el `readyz` de cada
+mini-PC: sin líder en rqlite el Wheel no puede apuntar sus pasadas y la EC2 lo dice
+así, en vez de culpar a su cron. Montaje en [`Nodos/README.md`](Nodos/README.md),
+Servicio 10.
+
+**Banco**: `Sentinel-Selftest-Avisos.sh` (curl, ssh y sleep falsos; reloj con
+`SENTINEL_NOW`), 109 pruebas. Pasa entero en sentinel014 (Ubuntu, ~1 min) y en
+sentinel001 (Termux, ~7 min); en Git Bash tarda más de 15 min por lo que cuesta
+lanzar procesos en Windows. Contra el `Sentinel-Wheel.awk` anterior fallan las
+pruebas del quórum y del RTT, que es lo que demuestran.
+
+**Revisión adversarial** (43 agentes, seis ángulos y un escéptico por hallazgo):
+36 hallazgos confirmados, unos 20 distintos, todos corregidos y con su prueba. Los
+que habrían dolido en producción: el trap que no salía (una señal dejaba
+`alert.state` vacío), la vigilancia del rqlited que nunca saltaba con el `/nodes`
+real (sin `api_addr`), los «datos no llegan» falsos al volver un nodo o con la base
+congelada, los pares «sin líder / de vuelta» en una tormenta, y un nodo con el
+token viejo que pasaba por sano.
+
 ## Estado de la flota v2
 
 | Nodo | Plataforma | Backend | Sin token | mTLS | rqlited |

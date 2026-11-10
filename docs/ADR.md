@@ -135,11 +135,30 @@ Doble sondeo (`Prueba()` reintenta al doble de timeout) + `MaxMiss=2` +
 **corroboracion por transporte distinto** (`WheelAlcanzable()` pregunta a rqlite,
 que viaja por otro camino) + ventana de asentamiento `WHEEL_SETTLE=420`.
 
+Dos reglas mas desde el 2026-11-09, tras medir dos Wheels a la vez del 31/10 al
+06/11: el quorum cuenta **nodos, no direcciones** (uno mismo contestaba por
+127.0.0.1 y por su IP y contaba doble), y la puntuacion **solo usa datos de
+`/fitness`**, iguales para todos los observadores. El RTT medido por quien puntua
+se quito: cada nodo se medía a si mismo por loopback a ~0 ms y, con 014 y 016 a
+menos de 2 puntos, cada uno se elegia a si mismo.
+
 ### Avisar por tendencia, no por estado instantaneo
 
-Se compara contra el estado anterior (`alert.state`, 4 campos). Snapshots viejos
-se descartan (`STATE_MAX=1800`) preservando nombres. Tolerancias por nodo via
-`GRACE_NODES`.
+Se compara contra el estado anterior (`alert.state`, 7 campos desde el
+2026-11-09: `clave|nombre|estado|desde|ult_aviso|visto|ok_desde`). Snapshots viejos se
+descartan (`STATE_MAX=1800`) preservando nombres. Tolerancias por nodo via
+`GRACE_NODES`. Un aviso solo cuenta como dado si Telegram lo confirma; si no, la
+transicion se reintenta en la pasada siguiente. Lo que sigue mal se recuerda cada
+24 h.
+
+### Que se vigila, y por que cada cosa
+
+Que el agente conteste no basta: un nodo puede tener el agente vivo con el
+rqlited muerto, o con el cron parado (en Termux el cron mueve la telemetria, la
+eleccion y los avisos). Por eso el Wheel mira tambien el `/readyz` de rqlite, el
+`reachable` de cada nodo en `/nodes`, la antiguedad de sus datos y los equipos sin
+agente (`EXTRA_CHECKS`). Lo que el Wheel no puede ver por estar dentro (apagon,
+internet caido, el propio Wheel sin cron) lo vigila la EC2 con un latido.
 
 ### Zona horaria fijada en la configuracion, no en el aparato
 

@@ -1,0 +1,7 @@
+[Unit]
+Description=Sentinel v2 - latido a la EC2 cada 5 min (solo sentinel014 y sentinel016)
+[Timer]
+OnBootSec=3min
+OnUnitActiveSec=5min
+[Install]
+WantedBy=timers.target

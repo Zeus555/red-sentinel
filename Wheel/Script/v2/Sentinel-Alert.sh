@@ -1,5 +1,5 @@
 #!/usr/bin/env sh
-# Sentinel v2 - Alertas de nodo caido (Fase 5).
+# Sentinel v2 - Avisos de la red (Fase 5; ampliado el 2026-11-09).
 #
 # QUIEN AVISA: solo el WHEEL. Corre por cron en todos los nodos, pero cada uno
 # comprueba antes si le toca; los demas salen sin hacer nada. Asi el aviso lo
@@ -7,9 +7,28 @@
 # propio Wheel cae, el siguiente ciclo de eleccion (<=5 min) nombra otro y ese
 # empieza a avisar — incluido el aviso de que el anterior se cayo.
 #
-# QUE AVISA: transiciones, no estados. Solo se manda mensaje cuando un nodo pasa
-# de responder a no responder (y al reves), y cuando cambia el Wheel. Sin esto,
-# un nodo caido generaria un mensaje cada 5 minutos para siempre.
+# QUE VIGILA (cada cosa con su clave en alert.state):
+#   - nodos: responden al puerto del agente (lo de siempre);
+#   - rqlite: que el cluster tenga lider visto desde aqui y que alcance al rqlited
+#     de cada nodo cuyo agente si responde (un agente vivo con su rqlited muerto
+#     pasaba por sano);
+#   - datos: que la telemetria de cada nodo siga llegando. En Termux la
+#     temperatura y la bateria las escribe el CRON: si cron muere, el agente sigue
+#     respondiendo y tambien parecia sano (sentinel017, 16 h sin datos el 09/11);
+#   - EXTRA_CHECKS: equipos sin agente Sentinel, como sentinel020;
+#   - bateria: enchufado pero perdiendo carga (lo de siempre).
+#
+# QUE AVISA: transiciones, no estados. Mensaje al pasar a mal y al volver, mas un
+# RECORDATORIO cada RECORDATORIO_H horas mientras siga mal: antes una caida de
+# diez dias (017) se anunciaba una sola vez y luego silencio.
+#
+# SI TELEGRAM FALLA: la transicion NO se da por hecha. El estado se queda como
+# estaba y la siguiente pasada vuelve a intentarlo. Antes se guardaba igual y ese
+# aviso se perdia para siempre. Cada envio queda en alert.log.
+#
+# LATIDO: al terminar, el Wheel escribe la hora de la pasada en rqlite
+# (sentinel_vigia). Sentinel-Latido.sh la lleva a la EC2, que avisa si deja de
+# avanzar: un Wheel con el cron parado no puede avisar de que no avisa.
 #
 # TOLERANCIA (GRACE_NODES): un nodo puede tener un plazo antes de darlo por caido.
 # Sirve para equipos que se reinician de vez en cuando de forma legitima (la
@@ -19,12 +38,14 @@
 # POR DONDE: el mismo bot de Telegram que ya usa thermal-guard, para no abrir un
 # canal nuevo ni duplicar secretos (~/PRC_Thermal/thermal-guard.conf).
 #
-# DRY=1 imprime los mensajes en vez de enviarlos.
+# DRY=1 imprime los mensajes en vez de enviarlos (y no escribe el latido).
+# SENTINEL_NOW=<epoch> fija el reloj, para el banco de pruebas.
 
 set -u
 BASE="${SENTINEL_BASE:-$HOME/PRC_Sentinel/v2}"
 CONF="$BASE/sentinel.conf"
 STATE="$BASE/alert.state"
+LOGF="$BASE/alert.log"
 DRY="${DRY:-0}"
 
 [ -r "$CONF" ] || exit 0
@@ -32,12 +53,23 @@ DRY="${DRY:-0}"
 [ -r "$BASE/fleet.token" ] && TOKEN=$(cat "$BASE/fleet.token")
 [ -n "${TOKEN:-}" ] || exit 0
 PORT="${PORT:-8181}"
+AWK=$(command -v gawk 2>/dev/null || command -v awk)
+TAB=$(printf '\t')
+
+ahora(){
+  if [ -n "${SENTINEL_NOW:-}" ]; then printf '%s' "$SENTINEL_NOW"; return; fi
+  date +%s 2>/dev/null || printf 0
+}
+entero(){ case "${1:-}" in ''|*[!0-9]*) printf '%s' "${2:-0}" ;; *) printf '%s' "$1" ;; esac; }
+# Salida sin hacer nada. En DRY dice por que: una prueba a mano que no imprime
+# nada no distingue "todo bien" de "no me tocaba".
+callar(){ [ "$DRY" = "1" ] && echo "[DRY] no paso: $1"; exit 0; }
 
 # --- ¿Me toca a mi? -------------------------------------------------------
 WHEEL=""
 [ -r "$BASE/wheel.state" ] && WHEEL=$(tr -d '[:space:]' < "$BASE/wheel.state")
 if [ "$WHEEL" != "${NAME:-}" ]; then
-  exit 0            # no soy el Wheel: no me corresponde avisar
+  callar "no soy el Wheel (wheel.state dice ${WHEEL:-nada})"
 fi
 
 # --- Reparto en el tiempo -------------------------------------------------
@@ -54,35 +86,60 @@ if [ "${SENTINEL_NOJITTER:-0}" != "1" ]; then
   case "${_j:-}" in ''|*[!0-9]*) _j=0 ;; esac
   [ "$_j" -gt 0 ] && sleep $(( _j % 120 ))
 fi
+AHORA=$(entero "$(ahora)" 0)
 
 # Recien coronado: callar un ciclo. wheel.state SOLO se reescribe cuando el
 # ganador cambia, asi que un Wheel asentado tiene un mtime viejo. Si acabo de
 # proclamarme, lo mas probable es que haya perdido de vista al coordinador un
 # momento y la eleccion se corrija sola en la ronda siguiente; hablar ahora es
 # justo lo que producia dos avisos del mismo suceso.
-SETTLE="${WHEEL_SETTLE:-420}"
-case "$SETTLE" in *[!0-9]*|"") SETTLE=0 ;; esac
+SETTLE=$(entero "${WHEEL_SETTLE:-420}" 0)
 if [ "$SETTLE" -gt 0 ]; then
   wm=$(stat -c %Y "$BASE/wheel.state" 2>/dev/null || echo "")
-  ahora=$(date +%s 2>/dev/null || echo "")
-  if [ -n "$wm" ] && [ -n "$ahora" ] && [ $((ahora - wm)) -lt "$SETTLE" ]; then
-    exit 0
+  if [ -n "$wm" ] && [ "$AHORA" -gt 0 ] && [ $((AHORA - wm)) -lt "$SETTLE" ]; then
+    callar "recien coronado (wheel.state de hace $((AHORA - wm)) s; WHEEL_SETTLE=0 para probar)"
   fi
 fi
 
+# Cerrojo: con muchos nodos caidos una pasada puede superar los 5 min del cron y
+# dos pasadas a la vez se pisarian alert.state. mkdir es atomico.
+LOCK="$BASE/.alert.lock"
+if ! mkdir "$LOCK" 2>/dev/null; then
+  lt=$(stat -c %Y "$LOCK" 2>/dev/null || echo 0)
+  if [ "$lt" -gt 0 ] && [ "$AHORA" -gt 0 ] && [ $((AHORA - lt)) -gt 600 ]; then
+    rmdir "$LOCK" 2>/dev/null
+    mkdir "$LOCK" 2>/dev/null || callar "cerrojo ocupado"
+  else
+    callar "hay otra pasada en curso (cerrojo $LOCK)"
+  fi
+fi
+OBS="$BASE/.alert.obs.$$"; OUT="$BASE/.alert.out.$$"; VACIO="$BASE/.alert.vacio.$$"
+# La limpieza va en EXIT y las senales solo SALEN (y con eso disparan EXIT). En sh
+# un trap de senal ejecuta su codigo y el script SIGUE: con la limpieza ahi, un
+# Ctrl-C o un `systemctl stop` a mitad de pasada borraba los temporales y la pasada
+# seguia hasta dejar alert.state solo con __wheel__.
+limpiar(){ rm -f "$OBS" "$OUT" "$VACIO" "$VACIO.b" "$STATE.tmp.$$"; rmdir "$LOCK" 2>/dev/null; }
+trap limpiar EXIT
+trap 'exit 1' INT TERM HUP
+: > "$OBS"; : > "$VACIO"
+
+# La lista del cluster se pide UNA vez y se reutiliza: sirve para ver si hay otro
+# Wheel, para saber a quien vigilar y para ver que rqlited alcanza el cluster.
+# 'nonvoters' es obligatorio: sin el, /nodes solo lista los nodos con voto (3 desde
+# el 2026-10-30) y el resto de la flota dejaria de vigilarse sin ningun aviso.
+NODOS_JSON=""
+[ -n "${RQLITE:-}" ] && NODOS_JSON=$(curl -s -m 5 "$RQLITE/nodes?nonvoters&timeout=2s" 2>/dev/null)
+
 # Segunda comprobacion, contra la RED y no contra mi fichero: si otro nodo
-# tambien se cree Wheel, callarse y dejar avisar solo al de nombre menor. Con
-# una eleccion sana esto nunca se activa, pero durante una ventana de
-# desacuerdo evita que lleguen cuatro avisos del mismo suceso (paso el
-# 2026-08-15). El desempate por nombre es estable: todos eligen al mismo.
+# tambien se cree Wheel, callarse y dejar avisar solo a uno. Con una eleccion
+# sana esto nunca se activa, pero durante una ventana de desacuerdo evita que
+# lleguen cuatro avisos del mismo suceso (paso el 2026-08-15).
 campo(){ printf '%s' "$1" | sed -n "s/.*\"$2\"[ ]*:[ ]*\"\{0,1\}\([^,\"}]*\).*/\1/p" | head -1; }
-entero(){ case "${1:-}" in ''|*[!0-9]*) printf 0 ;; *) printf '%s' "$1" ;; esac; }
 
 if [ -n "${RQLITE:-}" ]; then
   MIO=$(curl -s -m 4 "http://127.0.0.1:${PORT:-8181}/fitness?token=$TOKEN" 2>/dev/null)
   MI_EST=$(entero "$(campo "$MIO" estable)"); MI_UP=$(entero "$(campo "$MIO" uptime)")
-  OTROS=$(curl -s -m 5 "$RQLITE/nodes?nonvoters&timeout=2s" 2>/dev/null \
-          | grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | sort -u)
+  OTROS=$(printf '%s' "$NODOS_JSON" | grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | sort -u)
   for ip in $OTROS; do
     v=$(curl -s -m 4 "http://$ip:${PORT:-8181}/version?token=$TOKEN" 2>/dev/null)
     case "$v" in *'"wheel":1'*)
@@ -95,10 +152,10 @@ if [ -n "${RQLITE:-}" ]; then
       # acababa dando el nodo menos fiable. Mismo criterio que la eleccion:
       # primero estar siempre encendido, luego llevar mas tiempo en pie.
       o_est=$(entero "$(campo "$of" estable)"); o_up=$(entero "$(campo "$of" uptime)")
-      if [ "$o_est" -gt "$MI_EST" ]; then exit 0; fi
+      if [ "$o_est" -gt "$MI_EST" ]; then callar "$otro tambien se cree Wheel y es estable"; fi
       if [ "$o_est" -eq "$MI_EST" ]; then
-        if [ "$o_up" -gt "$MI_UP" ]; then exit 0; fi
-        if [ "$o_up" -eq "$MI_UP" ] && [ "$otro" \< "$NAME" ]; then exit 0; fi
+        if [ "$o_up" -gt "$MI_UP" ]; then callar "$otro tambien se cree Wheel y lleva mas en pie"; fi
+        if [ "$o_up" -eq "$MI_UP" ] && [ "$otro" \< "$NAME" ]; then callar "$otro tambien se cree Wheel (empate)"; fi
       fi ;;
     esac
   done
@@ -112,79 +169,79 @@ if [ -r "$TG_CONF" ]; then
   CHAT_ID=$(sed -n 's/^CHAT_ID=//p' "$TG_CONF" | tr -d '"'"'"' \r')
 fi
 
-avisar(){ # $1 = texto
-  if [ "$DRY" = "1" ]; then printf '[DRY] %s\n' "$1"; return 0; fi
-  [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ] || { echo "sin credenciales de Telegram"; return 1; }
-  curl -s -m 15 -o /dev/null \
-    --data-urlencode "chat_id=$CHAT_ID" \
-    --data-urlencode "text=$1" \
-    "https://api.telegram.org/bot$BOT_TOKEN/sendMessage"
+# Registro de envios: una linea por intento, con el resultado. Es lo que permite
+# saber despues si un aviso salio o se quedo pendiente.
+registrar(){ # $1=categoria $2=resultado $3=texto
+  printf '%s %s %s | %s\n' "$(date '+%m-%d %H:%M:%S' 2>/dev/null)" "$1" "$2" \
+    "$(printf '%s' "$3" | head -n 1)" >> "$LOGF" 2>/dev/null
 }
 
-# --- Bateria: enchufado pero perdiendo carga ------------------------------
-# El fallo que mato a sentinel017 el 18/08: estaba enchufado, pero Android habia
-# cortado la carga por temperatura (~42 C) y el telefono tiro de bateria hasta
-# agotarla. El aviso termico de thermal-guard salta a 45 C, POR ENCIMA del corte,
-# asi que hay una franja donde un equipo deja de cargar sin que nadie se entere.
-#
-# Se mira la TENDENCIA, no el instante: un telefono en el limite alterna CHARGING
-# y NOT_CHARGING cada pocos minutos (sentinel003 lo hizo dos veces en media hora)
-# y avisar de cada cambio seria ruido puro. Lo que no admite discusion es perder
-# porcentaje estando enchufado a la corriente.
-BSTATE="$BASE/bat.state"
-BCAIDA="${BAT_CAIDA_PCT:-5}"    # puntos perdidos en 2 h que disparan el aviso
-BMIN="${BAT_MIN_PCT:-30}"       # suelo absoluto, estando enchufado
-if [ -n "${RQLITE:-}" ]; then
-  BQ="SELECT b.node,b.pct,b.estado,b.enchufe,ROUND(b.temp_c,1),IFNULL((SELECT pct FROM sentinel_bateria WHERE node=b.node AND ts<=b.ts-7200 ORDER BY ts DESC LIMIT 1),-1) FROM sentinel_bateria b JOIN (SELECT node n,MAX(ts) m FROM sentinel_bateria GROUP BY node) x ON b.node=x.n AND b.ts=x.m"
-  BR=$(curl -s -m 12 -G "$RQLITE/db/query" --data-urlencode "q=$BQ" 2>/dev/null \
-       | sed 's/.*"values":\[//; s/\]}.*//' | sed 's/\],\[/\n/g' | tr -d '[]"')
-  BANT=""; [ -r "$BSTATE" ] && BANT=$(cat "$BSTATE")
-  BNUEVO=""; BMAL=""; BBIEN=""
-  IFS='
-'
-  for l in $BR; do
-    nb=$(printf '%s' "$l" | cut -d, -f1); pb=$(printf '%s' "$l" | cut -d, -f2)
-    eb=$(printf '%s' "$l" | cut -d, -f3); ub=$(printf '%s' "$l" | cut -d, -f4)
-    tb=$(printf '%s' "$l" | cut -d, -f5); ab=$(printf '%s' "$l" | cut -d, -f6)
-    [ -n "$nb" ] || continue
-    case "$ub" in PLUGGED*) ;; *) continue ;; esac   # desenchufado: es lo normal
-    stb=ok; det=""
-    if [ "${pb:-100}" -le "$BMIN" ] 2>/dev/null; then stb=mal; det="por debajo del $BMIN%"; fi
-    if [ "${ab:--1}" -ge 0 ] 2>/dev/null && [ $((ab - pb)) -ge "$BCAIDA" ] 2>/dev/null; then
-      stb=mal; det="ha perdido $((ab - pb)) puntos en 2 h (estaba al $ab%)"
-    fi
-    antb=$(printf '%s\n' "$BANT" | sed -n "s/^$nb|//p")
-    [ -n "$antb" ] || antb=ok
-    [ "$stb" = mal ] && [ "$antb" = ok ] && BMAL="$BMAL
-  • $nb $pb% — $det, $eb a $tb °C"
-    [ "$stb" = ok ] && [ "$antb" = mal ] && BBIEN="$BBIEN
-  • $nb $pb%"
-    BNUEVO="$BNUEVO$nb|$stb
-"
+# Devuelve 0 SOLO si Telegram confirma el envio ("ok":true con HTTP 200). curl
+# sale con 0 aunque la API responda 400 o 500, asi que su codigo de salida no
+# sirve para saber si el mensaje llego.
+enviar(){ # $1=categoria $2=texto
+  if [ "$DRY" = "1" ]; then printf '[DRY] %s\n' "$2"; registrar "$1" dry "$2"; return 0; fi
+  if [ -z "$BOT_TOKEN" ] || [ -z "$CHAT_ID" ]; then registrar "$1" "FALLO sin-credenciales" "$2"; return 1; fi
+  # La URL (que lleva el token del bot) va por la entrada con -K, no en argv: asi
+  # no aparece en `ps` mientras dura el envio.
+  _r=$(printf 'url = "https://api.telegram.org/bot%s/sendMessage"\n' "$BOT_TOKEN" \
+       | curl -s -m 20 -K - -w '\n%{http_code}' \
+        --data-urlencode "chat_id=$CHAT_ID" \
+        --data-urlencode "text=$2" 2>/dev/null)
+  _c=$(printf '%s' "$_r" | tail -n 1)
+  case "$_c" in
+    200) case "$_r" in *'"ok":true'*) registrar "$1" ok "$2"; return 0 ;; esac ;;
+  esac
+  registrar "$1" "FALLO http=${_c:-000}" "$2"
+  return 1
+}
+
+obs(){ # $1=clave $2=nombre $3=ok|mal $4=detalle $5=gracia(s)
+  # '|' separa campos en alert.state: no puede colarse en un nombre ni un detalle.
+  printf 'O|%s|%s|%s|%s|%s\n' "$1" "$(printf '%s' "$2" | tr '|\t\n' '/  ')" "$3" \
+    "$(printf '%s' "$4" | tr '|\t\n' '/  ')" "$(entero "${5:-0}")" >> "$OBS"
+}
+
+# Tolerancia por IP, en segundos: GRACE_NODES=ip:segundos[,ip:segundos...]
+# 0 (o ausente) = comportamiento de siempre, avisar en cuanto falla el sondeo.
+gracia_de(){
+  g=0
+  for par in $(printf '%s' "${GRACE_NODES:-}" | tr ', ' '\n\n'); do
+    case "$par" in "$1":*) g=${par#*:} ;; esac
   done
-  unset IFS
-  [ -n "$BMAL" ] && avisar "🔋 Sentinel: enchufado pero perdiendo bateria:$BMAL
-Android corta la carga por encima de unos 42 °C. Avisa $NAME (Wheel)."
-  [ -n "$BBIEN" ] && avisar "🔌 Sentinel: bateria recuperada:$BBIEN
-Avisa $NAME (Wheel)."
-  [ -n "$BNUEVO" ] && printf '%s' "$BNUEVO" > "$BSTATE"
+  case "$g" in *[!0-9]*|"") g=0 ;; esac
+  printf '%s' "$g"
+}
+
+RQ_GRACIA=$(entero "${RQ_GRACIA:-240}" 240)
+TMAX=$(( $(entero "${DATOS_TEMP_MAX_MIN:-20}" 20) * 60 ))
+BTMAX=$(( $(entero "${DATOS_BAT_MAX_MIN:-20}" 20) * 60 ))
+RECORD=$(( $(entero "${RECORDATORIO_H:-24}" 24) * 3600 ))
+
+# --- 1. rqlite: ¿tiene lider visto desde aqui? ----------------------------
+# /readyz de mi propio rqlited: 200 = tiene lider; 503 = sin lider (tormenta de
+# elecciones, sin quorum); sin respuesta = el rqlited de este nodo no contesta.
+RZ=""
+if [ -n "${RQLITE:-}" ]; then
+  RZ=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$RQLITE/readyz" 2>/dev/null)
+  case "$RZ" in
+    200) obs "__cl__" "rqlite" ok "" "$RQ_GRACIA" ;;
+    000|"") obs "__cl__" "rqlite" mal "el rqlited de $NAME no responde" "$RQ_GRACIA" ;;
+    *) obs "__cl__" "rqlite" mal "el clúster no tiene líder visto desde $NAME (readyz $RZ)" "$RQ_GRACIA" ;;
+  esac
 fi
 
-# --- Lista de nodos: la misma fuente que usa la eleccion -------------------
-IPS=""
-if [ -n "${RQLITE:-}" ]; then
-  # grep -o y no sed: con 'sed s/.*\(IP\).*/\1/' el '.*' inicial es CODICIOSO y se
-  # come el primer octeto ("192.168.1.124" salia como "2.168.1.124"), con lo que
-  # ningun nodo respondia y se habria avisado de una caida total falsa.
-  # 'nonvoters' es obligatorio: sin el, /nodes solo lista los nodos con voto (3 desde
-  # el 2026-10-30) y el resto de la flota dejaria de vigilarse sin ningun aviso.
-  IPS=$(curl -s -m 5 "$RQLITE/nodes?nonvoters&timeout=2s" 2>/dev/null \
-        | grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' \
-        | sort -u)
-fi
+# --- 3. Nodos: la misma fuente que usa la eleccion -------------------------
+# grep -o y no sed: con 'sed s/.*\(IP\).*/\1/' el '.*' inicial es CODICIOSO y se
+# come el primer octeto ("192.168.1.124" salia como "2.168.1.124"), con lo que
+# ningun nodo respondia y se habria avisado de una caida total falsa.
+IPS=$(printf '%s' "$NODOS_JSON" | grep -oE '[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}\.[0-9]{1,3}' | sort -u)
 if [ -z "$IPS" ] && [ -r "$BASE/peers.tsv" ]; then
-  IPS=$(cut -f1 "$BASE/peers.tsv" | sort -u)
+  IPS=$(cut -f1 "$BASE/peers.tsv" | grep -E '^[0-9]' | sort -u)
 fi
+# Sin lista de la flota (ni rqlite ni peers.tsv) no se sabe quien sobra: los nodos
+# que no se sondeen esta pasada conservan su estado en vez de olvidarse.
+NODOS_OK=0; [ -n "$IPS" ] && NODOS_OK=1
 
 # Nodos que NO estan en el cluster rqlite y aun asi hay que vigilar (la laptop,
 # por ejemplo, que pertenece a la red Sentinel pero no guarda la base de datos).
@@ -203,110 +260,427 @@ if [ -n "${SKIP_NODES:-}" ]; then
   done
 fi
 
-[ -n "$IPS" ] || exit 0
-
-# Tolerancia por nodo, en segundos: GRACE_NODES=ip:segundos[,ip:segundos...]
-# 0 (o ausente) = comportamiento de siempre, avisar en cuanto falla el sondeo.
-gracia_de(){
-  g=0
-  for par in $(printf '%s' "${GRACE_NODES:-}" | tr ', ' '\n\n'); do
-    case "$par" in "$1":*) g=${par#*:} ;; esac
-  done
-  case "$g" in *[!0-9]*|"") g=0 ;; esac
-  printf '%s' "$g"
-}
-
-# --- Sondear: dos intentos, para no avisar por un fallo suelto ------------
-# Se pregunta a /fitness (no a /version) porque devuelve el NOMBRE del nodo, y se
-# guarda: un nodo caido no puede decir como se llama, asi que el aviso usa el
-# ultimo nombre conocido. Sin esto los mensajes solo podrian decir la IP.
-#
-# Formato de alert.state:  ip|nombre|estado_declarado|epoch_primer_fallo
-# El 4o campo es nuevo; un fichero antiguo de 3 campos se lee igual (queda vacio
-# y el reloj de la tolerancia empieza en el siguiente ciclo).
 ANTES=""
 [ -r "$STATE" ] && ANTES=$(cat "$STATE")
-AHORA=$(date +%s 2>/dev/null || echo 0)
 
 # Foto caducada: no sirve para comparar. Un nodo que no ha sido Wheel en dos dias
 # guarda el retrato de una red que ya no existe; al tomar el relevo dispararia
-# recuperaciones y caidas falsas de todo lo que haya cambiado desde entonces. El
-# Wheel en activo reescribe esto cada 5 min, asi que esto solo salta en un relevo.
-SMAX="${STATE_MAX:-1800}"
-case "$SMAX" in *[!0-9]*|"") SMAX=0 ;; esac
+# recuperaciones y caidas falsas. El motor tira los ESTADOS y conserva los nombres.
+# Se mira aqui, antes de sondear, porque tambien decide quien "acaba de volver".
+STALE=0
+SMAX=$(entero "${STATE_MAX:-1800}" 0)
 if [ -n "$ANTES" ] && [ "$SMAX" -gt 0 ] && [ "$AHORA" -gt 0 ]; then
   sm=$(stat -c %Y "$STATE" 2>/dev/null || echo "")
-  if [ -n "$sm" ] && [ $((AHORA - sm)) -gt "$SMAX" ]; then
-    # Se tiran los ESTADOS (caducados) pero se conservan los NOMBRES aprendidos:
-    # son lo unico del fichero que no caduca, y sin ellos un nodo que este caido
-    # justo en el relevo saldria como IP pelada en el aviso.
-    ANTES=$(printf '%s\n' "$ANTES" | awk -F'|' 'NF>=3 && $1!="" {printf "%s|%s|ok|\n",$1,$2}')
-  fi
+  [ -n "$sm" ] && [ $((AHORA - sm)) -gt "$SMAX" ] && STALE=1
 fi
 
-NUEVO=""; CAIDOS=""; VUELTOS=""
+# Se pregunta a /fitness (no a /version) porque devuelve el NOMBRE del nodo, y se
+# guarda: un nodo caido no puede decir como se llama, asi que el aviso usa el
+# ultimo nombre conocido. Sin esto los mensajes solo podrian decir la IP.
+# Dos intentos, para no avisar por un fallo suelto. Cuenta como vivo SOLO un
+# /fitness de verdad (lleva "nombre"), con el mismo criterio que la eleccion: un
+# agente que contesta 401 (se quedo con el token viejo tras una rotacion) esta
+# mudo para la flota y antes pasaba por sano.
+VIVOS=""   # "ip|nombre" de los que contestan: el resto de pruebas solo mira a estos
+VIVOS_DT="" # los mismos, menos los que acaban de volver (ver punto 5)
 for ip in $IPS; do
-  st="caido"; nom=""
+  st="mal"; nom=""; det=""
   for i in 1 2; do
-    resp=$(curl -s -m 6 "http://$ip:$PORT/fitness?token=$TOKEN" 2>/dev/null)
-    if [ -n "$resp" ]; then
-      st="ok"
-      nom=$(printf '%s' "$resp" | sed -n 's/.*"nombre"[ ]*:[ ]*"\([^"]*\)".*/\1/p')
-      break
-    fi
-    sleep 3
+    resp=$(curl -s -m 6 -w '\n%{http_code}' "http://$ip:$PORT/fitness?token=$TOKEN" 2>/dev/null)
+    hc=$(printf '%s' "$resp" | tail -n 1)
+    case "$resp" in
+      *'"nombre"'*)
+        st="ok"; det=""
+        nom=$(printf '%s' "$resp" | sed -n 's/.*"nombre"[ ]*:[ ]*"\([^"]*\)".*/\1/p' | head -n 1)
+        break ;;
+    esac
+    [ "$hc" = 401 ] && det="rechaza el token de la flota (401)"
+    [ "$i" = 1 ] && sleep 3
   done
-
-  ant_l=$(printf '%s\n' "$ANTES" | awk -F'|' -v ip="$ip" '$1==ip{print;exit}')
-  ant_st=$(printf '%s' "$ant_l" | cut -d'|' -f3)
-  desde=$(printf '%s' "$ant_l" | cut -d'|' -f4)
-  [ -n "$ant_st" ] || ant_st="ok"     # nodo nuevo: se asume sano, no se avisa de golpe
-
-  # Si esta caido, recuperar el nombre que se aprendio la ultima vez.
-  [ -n "$nom" ] || nom=$(printf '%s' "$ant_l" | cut -d'|' -f2)
-  [ -n "$nom" ] || nom="$ip"          # nunca visto: al menos la IP
-
-  # Estado DECLARADO (el que dispara avisos), que no siempre es el sondeado: con
-  # tolerancia, un nodo que acaba de dejar de responder sigue contando como sano
-  # hasta que se cumple el plazo. Si vuelve antes, no se avisa de nada.
-  gracia=$(gracia_de "$ip")
-  [ "$AHORA" -gt 0 ] || gracia=0      # sin reloj fiable, mejor avisar de mas
-  espera=0
-  if [ "$st" = "caido" ]; then
-    [ -n "$desde" ] || desde="$AHORA"
-    espera=$((AHORA - desde))
-    if [ "$gracia" -gt 0 ] && [ "$espera" -lt "$gracia" ]; then
-      st="$ant_st"                    # dentro del plazo: aun no se declara caido
-    else
-      st="caido"
-    fi
-  else
-    desde=""
+  # Un nombre raro (espacios, |, comillas) romperia las listas y el estado: se
+  # usa la IP. Los de la flota son sentinelNNN.
+  case "$nom" in *[!A-Za-z0-9_.-]*) nom="" ;; esac
+  [ "${#nom}" -le 40 ] || nom=""
+  [ -n "$nom" ] || nom=$(printf '%s\n' "$ANTES" | awk -F'|' -v ip="$ip" '$1==ip{print $2;exit}')
+  case "$nom" in ''|*[!A-Za-z0-9_.-]*) nom="$ip" ;; esac   # nunca visto: al menos la IP
+  obs "$ip" "$nom" "$st" "$det" "$(gracia_de "$ip")"
+  if [ "$st" = ok ]; then
+    VIVOS="$VIVOS $ip|$nom"
+    # Recien vuelto de una caida: sus datos son de antes de caer y thermal-guard y
+    # Sentinel-Bateria aun no han escrito. Mirarlos ahora daba un "datos no llegan"
+    # falso junto al "nodo recuperado". Se le miran a partir de la pasada siguiente.
+    # (Con la foto caducada ese "caido" no vale: no se aplica.)
+    ant=""; [ "$STALE" = 1 ] || ant=$(printf '%s\n' "$ANTES" | awk -F'|' -v ip="$ip" '$1==ip{print $3;exit}')
+    [ "$ant" = caido ] || VIVOS_DT="$VIVOS_DT $ip|$nom"
   fi
-
-  if [ "$st" = "caido" ] && [ "$ant_st" = "ok" ]; then
-    detalle=""
-    [ "$gracia" -gt 0 ] && detalle=" — sin responder desde hace $((espera / 60)) min"
-    CAIDOS="$CAIDOS
-  • $nom ($ip)$detalle"
-  fi
-  if [ "$st" = "ok" ] && [ "$ant_st" = "caido" ]; then VUELTOS="$VUELTOS
-  • $nom ($ip)"; fi
-
-  NUEVO="$NUEVO$ip|$nom|$st|$desde
-"
 done
 
-[ -n "$CAIDOS" ]  && avisar "🔴 Sentinel: nodo sin responder:$CAIDOS
-Dos sondeos fallidos al puerto $PORT. Avisa $NAME (Wheel)."
-[ -n "$VUELTOS" ] && avisar "🟢 Sentinel: nodo recuperado:$VUELTOS
-Avisa $NAME (Wheel)."
-
-# --- Cambio de Wheel ------------------------------------------------------
-WANT=$(printf '%s\n' "$ANTES" | sed -n 's/^__wheel__=//p')
-if [ -n "$WANT" ] && [ "$WANT" != "$NAME" ]; then
-  avisar "🔵 Sentinel: el coordinador (Wheel) pasa de $WANT a $NAME."
+# --- 3b. Bateria: enchufado pero perdiendo carga --------------------------
+# El fallo que mato a sentinel017 el 18/08: estaba enchufado, pero Android habia
+# cortado la carga por temperatura (~42 C) y el telefono tiro de bateria hasta
+# agotarla. El aviso termico de thermal-guard salta a 45 C, POR ENCIMA del corte,
+# asi que hay una franja donde un equipo deja de cargar sin que nadie se entere.
+#
+# Se mira la TENDENCIA, no el instante: un telefono en el limite alterna CHARGING
+# y NOT_CHARGING cada pocos minutos (sentinel003 lo hizo dos veces en media hora)
+# y avisar de cada cambio seria ruido puro. Lo que no admite discusion es perder
+# porcentaje estando enchufado a la corriente.
+BCAIDA="${BAT_CAIDA_PCT:-5}"    # puntos perdidos en 2 h que disparan el aviso
+BMIN="${BAT_MIN_PCT:-30}"       # suelo absoluto, estando enchufado
+if [ -n "${RQLITE:-}" ] && [ -n "$VIVOS" ]; then
+  BQ="SELECT b.node,b.pct,b.estado,b.enchufe,ROUND(b.temp_c,1),IFNULL((SELECT pct FROM sentinel_bateria WHERE node=b.node AND ts<=b.ts-7200 ORDER BY ts DESC LIMIT 1),-1),b.salud FROM sentinel_bateria b JOIN (SELECT node n,MAX(ts) m FROM sentinel_bateria WHERE ts > $((AHORA - 7200)) GROUP BY node) x ON b.node=x.n AND b.ts=x.m"
+  # Solo filas de las ultimas 2 h: un nodo retirado (o que dejo de mandar) no debe
+  # quedarse con su ultima lectura vieja recordandose cada dia. Que deje de mandar
+  # ya lo avisa la vigilancia de datos (dt:).
+  BRAW=$(curl -s -m 12 -G "$RQLITE/db/query" --data-urlencode "q=$BQ" --data-urlencode "level=none" 2>/dev/null)
+  case "$BRAW" in *'"values"'*)
+    BR=$(printf '%s' "$BRAW" | sed 's/.*"values":\[//; s/\]}.*//' | sed 's/\],\[/\n/g' | tr -d '[]"')
+    IFS='
+'
+    for l in $BR; do
+      nb=$(printf '%s' "$l" | cut -d, -f1); pb=$(printf '%s' "$l" | cut -d, -f2)
+      eb=$(printf '%s' "$l" | cut -d, -f3); ub=$(printf '%s' "$l" | cut -d, -f4)
+      tb=$(printf '%s' "$l" | cut -d, -f5); ab=$(printf '%s' "$l" | cut -d, -f6)
+      sb=$(printf '%s' "$l" | cut -d, -f7)
+      [ -n "$nb" ] || continue
+      # Solo nodos vigilados que contestan: el movil personal (SKIP_NODES) tambien
+      # manda bateria, y avisaria cada vez que se carga por debajo del 30 %.
+      case "$VIVOS " in *"|$nb "*) ;; *) continue ;; esac
+      # Solo nodos vigilados que contestan: el movil personal (SKIP_NODES) tambien
+      # manda bateria, y avisaria cada vez que se carga por debajo del 30 %.
+      case "$VIVOS " in *"|$nb "*) ;; *) continue ;; esac
+      case "$ub" in PLUGGED*) ;; *) continue ;; esac   # desenchufado: es lo normal
+      # Bateria que no se puede medir: sentinel018 da siempre 0 %, NOT_CHARGING y
+      # salud UNKNOWN con corriente positiva. Con el recordatorio diario seria un
+      # aviso para siempre por un sensor que no mide; no se evalua.
+      [ "$pb" = 0 ] && [ "$sb" = UNKNOWN ] && continue
+      stb=ok; det=""
+      if [ "${pb:-100}" -le "$BMIN" ] 2>/dev/null; then stb=mal; det="por debajo del $BMIN%"; fi
+      if [ "${ab:--1}" -ge 0 ] 2>/dev/null && [ $((ab - pb)) -ge "$BCAIDA" ] 2>/dev/null; then
+        stb=mal; det="ha perdido $((ab - pb)) puntos en 2 h (estaba al $ab%)"
+      fi
+      if [ "$stb" = mal ]; then obs "bt:$nb" "$nb" mal "$pb% — $det, $eb a $tb °C" 0
+      else obs "bt:$nb" "$nb" ok "$pb%" 0; fi
+    done
+    unset IFS ;;
+  esac
 fi
 
-printf '%s__wheel__=%s\n' "$NUEVO" "$NAME" > "$STATE"
+# --- 4. rqlited de cada nodo ----------------------------------------------
+# /nodes dice, para cada nodo, si el cluster alcanza su rqlited ("reachable"). Solo
+# se mira en los nodos cuyo agente SI responde (si no, ya hay aviso de caida) y
+# solo si mi propio rqlite tiene lider: un rqlite aislado ve a todos "inalcanzables"
+# y avisaria de una caida de toda la flota que no existe.
+if [ "$RZ" = 200 ] && [ -n "$NODOS_JSON" ]; then
+  # La IP sale de "addr" (la direccion Raft, que viene de la configuracion del
+  # cluster) y NO de "api_addr": rqlite solo rellena api_addr si el nodo contesta,
+  # asi que justo el nodo inalcanzable venia sin el y nunca se avisaba. Los regex
+  # admiten espacios tras los dos puntos, y '{' parte tanto la lista como el
+  # formato antiguo en mapa.
+  RQMAP=$(printf '%s' "$NODOS_JSON" | tr '{' '\n' | "$AWK" '
+    /"addr"[ ]*:/ { ip=""; r=""; v=""
+      if (match($0, /"addr"[ ]*:[ ]*"[0-9.]+:/)) { s=substr($0,RSTART,RLENGTH); sub(/^"addr"[ ]*:[ ]*"/,"",s); sub(/:$/,"",s); ip=s }
+      if ($0 ~ /"reachable"[ ]*:[ ]*true/) r="ok"; else if ($0 ~ /"reachable"[ ]*:[ ]*false/) r="mal"
+      if ($0 ~ /"voter"[ ]*:[ ]*true/) v="votante"; else v="sin voto"
+      if (ip!="" && r!="") print ip "|" r "|" v }')
+  for par in $VIVOS; do
+    ip=${par%%|*}; nom=${par#*|}
+    l=$(printf '%s\n' "$RQMAP" | awk -F'|' -v ip="$ip" '$1==ip{print;exit}')
+    [ -n "$l" ] || continue            # no esta en el cluster (la laptop): nada que mirar
+    r=$(printf '%s' "$l" | cut -d'|' -f2); v=$(printf '%s' "$l" | cut -d'|' -f3)
+    obs "rq:$ip" "$nom" "$r" "$v" "$RQ_GRACIA"
+  done
+fi
+
+# --- 5. ¿Siguen llegando sus datos? ---------------------------------------
+# Temperatura (thermal-guard) y bateria (Sentinel-Bateria.sh) de cada nodo que
+# responde. Una tabla que un nodo nunca escribio no cuenta (los Ubuntu no tienen
+# bateria; la laptop no manda nada). Una sola consulta, con el indice (node, ts).
+# Solo con rqlite sano (mi readyz = 200) y solo si la base de verdad recibe datos:
+# el dato MAS reciente de toda la flota tiene que ser de los ultimos 5 min
+# (temperatura, cada minuto) o 15 min (bateria, cada 5). Si no, el problema es la
+# base o mi replica, no los nodos, y lo cubre el punto 1; antes, con la base
+# congelada, salia un "datos no llegan" de media flota. Gracia de 2 pasadas.
+DGRACIA=$(entero "${DATOS_GRACIA:-600}" 600)
+if [ -n "${RQLITE:-}" ] && [ "$RZ" = 200 ] && [ -n "$VIVOS_DT" ]; then
+  SUB=""
+  for par in $VIVOS_DT; do
+    nom=${par#*|}
+    case "$nom" in *[!a-zA-Z0-9_-]*|"") continue ;; esac
+    SUB="${SUB:+$SUB UNION ALL }SELECT '$nom' AS n"
+  done
+  if [ -n "$SUB" ]; then
+    # La referencia de la flota es el dato mas reciente de cada tabla entre todos
+    # los nodos consultados (sale del indice, sin recorrer la tabla).
+    DQ="SELECT n,(SELECT MAX(ts) FROM sentinel_temp WHERE node=n),(SELECT MAX(ts) FROM sentinel_bateria WHERE node=n) FROM ($SUB)"
+    DRAW=$(curl -s -m 12 -G "$RQLITE/db/query" --data-urlencode "q=$DQ" --data-urlencode "level=none" 2>/dev/null)
+    case "$DRAW" in *'"values"'*)
+      printf '%s' "$DRAW" | sed 's/.*"values":\[//; s/\]}.*//' | sed 's/\],\[/\n/g' | tr -d '[]" ' \
+      | "$AWK" -F, -v now="$AHORA" -v tmax="$TMAX" -v btmax="$BTMAX" -v antes="$STATE" -v g="$DGRACIA" '
+        function dur(s){ if (s<3600) return int(s/60) " min"; if (s<86400) return int(s/3600) " h " int((s%3600)/60) " min"; return int(s/86400) " d " int((s%86400)/3600) " h" }
+        function num(x){ return (x=="null"||x=="") ? "" : x+0 }
+        BEGIN { while ((getline l < antes) > 0) if (l ~ /^dt:/) { split(l, a, "|"); Prev[substr(a[1],4)] = 1 } }
+        { n=$1; N[++k]=n; T[n]=num($2); B[n]=num($3)
+          if (T[n]!="" && (mt=="" || T[n]>mt)) mt=T[n]
+          if (B[n]!="" && (mb=="" || B[n]>mb)) mb=B[n] }
+        END {
+          okT = (mt!="" && now-mt <= 300)     # la base recibe temperatura
+          okB = (mb!="" && now-mb <= 900)     # la base recibe bateria
+          if (!okT && !okB) exit              # base parada o replica atrasada: no opinar
+          for (i=1;i<=k;i++){ n=N[i]; d=""; vale=0
+            if (okT && T[n]!="") { vale=1; if (now-T[n] > tmax) d = "sin temperatura desde hace " dur(now-T[n]) }
+            if (okB && B[n]!="") { vale=1; if (now-B[n] > btmax) d = d (d==""?"":"; ") "sin batería desde hace " dur(now-B[n]) }
+            if (!vale) { if (T[n]=="" && B[n]=="" && (n in Prev)) printf "O|dt:%s|%s|mal|sin datos en la base|%d\n", n, n, g; continue }
+            if (d=="") printf "O|dt:%s|%s|ok||%d\n", n, n, g
+            else printf "O|dt:%s|%s|mal|%s|%d\n", n, n, d, g
+          } }' >> "$OBS" ;;
+    esac
+  fi
+fi
+
+# --- 6. Equipos sin agente Sentinel (EXTRA_CHECKS) -------------------------
+# EXTRA_CHECKS=nombre=tcp://ip:puerto[,nombre=http://ip:puerto/...]
+# tcp: vale con que acepte la conexion (curl telnet:// mide el tiempo de conexion,
+# que es 0 si no llego a conectar). http: vale cualquier respuesta, incluido 401.
+set -f
+for par in $(printf '%s' "${EXTRA_CHECKS:-}" | tr ',' ' '); do
+  en=${par%%=*}; url=${par#*=}
+  case "$en" in *[!a-zA-Z0-9_-]*|"") continue ;; esac
+  [ "$url" != "$par" ] || continue
+  case "$url" in tcp://?*|http://?*|https://?*) ;; *) continue ;; esac   # mal escrito: se ignora, no se da por caido
+  st=mal
+  for i in 1 2; do
+    case "$url" in
+      tcp://*) tc=$(curl -s -o /dev/null -m 4 --connect-timeout 4 -w '%{time_connect}' "telnet://${url#tcp://}" </dev/null 2>/dev/null)
+               case "$tc" in *[1-9]*) st=ok ;; esac ;;   # "0.000000" = no conecto
+      # -k: solo se mira si el equipo contesta, no quien es; sin el, un certificado
+      # autofirmado lo daba por caido. Un servicio con certificado de CLIENTE
+      # (mTLS, como el 8443 de stunnel) corta el saludo igual: ese, con tcp://.
+      http://*|https://*) hc=$(curl -s -k -o /dev/null -m 6 -w '%{http_code}' "$url" 2>/dev/null)
+               case "$hc" in ''|000) ;; *) st=ok ;; esac ;;
+    esac
+    [ "$st" = ok ] && break
+    [ "$i" = 1 ] && sleep 3
+  done
+  h=${url#*://}; h=${h%%/*}; h=${h%%:*}
+  obs "ex:$en" "$en" "$st" "$url" "$(gracia_de "$h")"
+done
+set +f
+
+# --- Motor: de lo observado a avisos y estado -----------------------------
+# Formato de alert.state:  clave|nombre|estado|desde|ult_aviso|visto|ok_desde
+#   clave: la IP (nodos) o un prefijo rq: dt: ex: bt: y __cl__.
+#   desde: epoch del primer fallo de la racha (alimenta la tolerancia y la duracion).
+#   ult_aviso: epoch del ultimo aviso de esta racha (para el recordatorio).
+#   visto: ultima vez que se observo. Lo que no se observa se conserva tal cual
+#   (un nodo caido no deja mirar su rqlite ni sus datos) y se olvida a la semana.
+#   ok_desde: solo rqlite (__cl__, rq:): desde cuando va bien estando aun en mal.
+# Un fichero antiguo de 3 o 4 campos se lee igual. bat.state, si existe, se
+# importa una vez como claves bt: y se borra.
+ANTESF="$STATE"; [ -r "$STATE" ] || ANTESF="$VACIO"
+BATF="$BASE/bat.state"; [ -r "$BATF" ] || BATF="$VACIO.b"
+[ -r "$BATF" ] || : > "$BATF"
+"$AWK" -v now="$AHORA" -v stale="$STALE" -v record="$RECORD" -v vistomax=604800 \
+     -v nodos_ok="$NODOS_OK" -v fa="$ANTESF" -v fb="$BATF" -v fo="$OBS" '
+function dur(s){ if (s<60) return "menos de 1 min"; if (s<3600) return int(s/60) " min"; if (s<86400) return int(s/3600) " h " int((s%3600)/60) " min"; return int(s/86400) " d " int((s%86400)/3600) " h" }
+function tipo(k){ if (k=="__cl__") return "cl"; if (index(k,":")>0) return substr(k,1,2); return "nodo" }
+function linea(k,st,de,ul,vi,ok,   s){ s=st; if (tipo(k)=="nodo" && s=="mal") s="caido"; return k "|" Nom[k] "|" s "|" de "|" ul "|" vi "|" ok }
+function bala(k,clase,det,espera,g,   t,ip){
+	t=tipo(k)
+	if (t=="nodo") { ip=k
+		if (clase=="mal") return "• " Nom[k] " (" ip ")" ((det!="") ? " — " det : "") ((g>0) ? " — sin responder desde hace " dur(espera) : "")
+		if (clase=="bien") return "• " Nom[k] " (" ip ")" ((Desde[k]!="") ? " tras " dur(now-Desde[k]) : "")
+		return "• " Nom[k] " (" ip ") sin responder desde hace " dur(now-Desde[k]) }
+	if (t=="rq") { ip=substr(k,4)
+		if (clase=="mal") return "• " Nom[k] " (" ip ", " det ")"
+		if (clase=="bien") return "• " Nom[k] " (" ip ")"
+		return "• rqlited de " Nom[k] " fuera del clúster desde hace " dur(now-Desde[k]) }
+	if (t=="cl") {
+		if (clase=="mal") return "• " det
+		if (clase=="bien") return "• vuelve a tener líder" ((Desde[k]!="") ? " tras " dur(now-Desde[k]) : "")
+		return "• rqlite: " det " (desde hace " dur(now-Desde[k]) ")" }
+	if (t=="dt") {
+		if (clase=="mal") return "• " Nom[k] ": " det
+		if (clase=="bien") return "• " Nom[k]
+		return "• " Nom[k] ": " det }
+	if (t=="ex") {
+		if (clase=="mal") return "• " Nom[k] " (" det ")"
+		if (clase=="bien") return "• " Nom[k] ((Desde[k]!="") ? " tras " dur(now-Desde[k]) : "")
+		return "• " Nom[k] " sin responder desde hace " dur(now-Desde[k]) }
+	if (t=="bt") {
+		if (clase=="mal") return "• " Nom[k] " " det
+		if (clase=="bien") return "• " Nom[k] " " det
+		return "• " Nom[k] ": batería " det }
+	return "• " k
+}
+BEGIN { FS="|" }
+FILENAME==fa {
+	if ($0 ~ /^__wheel__=/ || NF < 3 || $1 == "") next
+	k=$1; if (k in Prev) next
+	Prev[k]=1; Orden[++np]=k; Nom[k]=$2; St[k]=($3=="caido") ? "mal" : $3
+	Desde[k]=$4; Ult[k]=$5; Visto[k]=$6; Okd[k]=$7
+	if (tipo(k)=="bt") hayBt=1
+	if (stale) { St[k]="ok"; Desde[k]=""; Ult[k]=""; Okd[k]="" }
+	next
+}
+FILENAME==fb {
+	if (hayBt || NF < 2 || $1 == "") next
+	k="bt:" $1; if (k in Prev) next
+	Prev[k]=1; Orden[++np]=k; Nom[k]=$1; St[k]=(stale) ? "ok" : $2; Desde[k]=""; Ult[k]=""; Visto[k]=""; Okd[k]=""
+	next
+}
+FILENAME==fo {
+	if ($1 != "O") next
+	k=$2; if (k in Obs) next
+	Obs[k]=1; OrdenO[++no]=k; ONom[k]=$3; OSon[k]=$4; ODet[k]=$5; OGra[k]=$6+0
+	next
+}
+END {
+	for (i=1;i<=no;i++){
+		k=OrdenO[i]
+		if (!(k in Prev)) { St[k]="ok"; Desde[k]=""; Ult[k]=""; Okd[k]="" }   # nuevo: se asume sano
+		ant=St[k]; de=Desde[k]; ul=Ult[k]; okd=Okd[k]; t=tipo(k)
+		if (ONom[k]!="") Nom[k]=ONom[k]
+		g=OGra[k]; espera=0
+		# rqlite tambien pide estabilidad AL VOLVER: en una tormenta de elecciones
+		# /readyz y "reachable" oscilan, y sin esto salia un par "sin lider" / "de
+		# vuelta" cada 15 min durante horas. okd = desde cuando va bien otra vez.
+		gv=(t=="cl" || t=="rq") ? g : 0
+		if (OSon[k]=="mal") {
+			okd=""
+			if (de=="") de=now
+			espera=now-de
+			decl=(g>0 && espera<g) ? ant : "mal"
+		} else if (ant=="mal" && gv>0) {
+			if (okd=="") okd=now
+			decl=(now-okd >= gv) ? "ok" : "mal"
+		} else { decl="ok" }
+		cm="-"
+		if (ant=="ok" && decl=="mal") {
+			cm=t "_mal"; if (t=="nodo") cm="caido"
+			printf "M\t%s\t%s\n", cm, bala(k,"mal",ODet[k],espera,g)
+			c=linea(k,"mal",de,now,now,""); f=linea(k,"ok",de,ul,now,"")
+		} else if (ant=="mal" && decl=="ok") {
+			cm=t "_bien"; if (t=="nodo") cm="vuelto"
+			printf "M\t%s\t%s\n", cm, bala(k,"bien",ODet[k],0,g)
+			c=linea(k,"ok","","",now,""); f=linea(k,"mal",Desde[k],ul,now,okd)
+		} else if (decl=="mal") {
+			if (ul=="") ul=now                  # racha heredada sin fecha de aviso
+			if (de=="") de=now
+			Desde[k]=de
+			# Recordatorio solo si sigue fallando de verdad (no si ya va bien y solo
+			# espera la estabilidad), y RECORDATORIO_H=0 lo desactiva.
+			if (OSon[k]=="mal" && record>0 && now-ul >= record) {
+				cm="recuerdo"
+				printf "M\t%s\t%s\n", cm, bala(k,"recuerdo",ODet[k],0,g)
+				c=linea(k,"mal",de,now,now,okd); f=linea(k,"mal",de,ul,now,okd)
+			} else { c=linea(k,"mal",de,ul,now,okd); f=c }
+		} else {
+			if (OSon[k]=="ok") de=""
+			c=linea(k,"ok",de,"",now,""); f=c
+		}
+		printf "S\t%s\t%s\t%s\n", cm, c, f
+	}
+	for (i=1;i<=np;i++){
+		k=Orden[i]; if (k in Obs) continue
+		if (tipo(k)=="nodo" && nodos_ok) continue       # ya no esta en la flota
+		vi=Visto[k]; if (vi=="") vi=now
+		if (now-vi > vistomax) continue                 # una semana sin observarse: se olvida
+		# Sin observar, una racha a medias no sigue contando: si iba "ok" dentro de
+		# su tolerancia, al volver a mirarse empieza de cero (antes se la saltaba);
+		# y una vuelta a medias de rqlite tampoco se da por buena.
+		# Excepto los datos (dt:): su antiguedad la da el propio ts, y si se borrara
+		# aqui un nodo que se cae una pasada de cada cuatro no avisaria nunca de que
+		# sus datos estan parados.
+		de=(St[k]=="ok" && tipo(k)!="dt") ? "" : Desde[k]
+		c=linea(k,St[k],de,Ult[k],vi,"")
+		printf "S\t-\t%s\t%s\n", c, c
+	}
+}' "$ANTESF" "$BATF" "$OBS" > "$OUT"
+MRC=$?
+# Sin un motor sano no se toca nada: un estado vacio olvidaria todas las caidas y
+# las volveria a anunciar sin nombre en la pasada siguiente.
+if [ "$MRC" != 0 ] || [ ! -f "$OUT" ] || { [ -n "$ANTES" ] && ! grep -q "^S$TAB" "$OUT"; }; then
+  registrar motor "FALLO rc=$MRC" "no se escribe alert.state en esta pasada"
+  exit 1
+fi
+
+# --- Envio por categorias -------------------------------------------------
+# Un mensaje por categoria y pasada. Si una categoria no se puede enviar, sus
+# claves vuelven a su estado anterior y la pasada siguiente lo reintenta.
+cuerpo(){ grep "^M$TAB$1$TAB" "$OUT" | cut -f3- | sed 's/^/  /'; }
+OKC=" - "; FALLOS=0
+mandar(){ # $1=categoria $2=cabecera $3=pie
+  _b=$(cuerpo "$1"); [ -n "$_b" ] || return 0
+  if enviar "$1" "$2
+$_b${3:+
+$3}"; then OKC="$OKC$1 "; else FALLOS=$((FALLOS + 1)); fi
+}
+W="Avisa $NAME (Wheel)."
+mandar caido   "🔴 Sentinel: nodo sin responder:" "Dos sondeos fallidos al puerto $PORT. $W"
+mandar vuelto  "🟢 Sentinel: nodo recuperado:" "$W"
+mandar cl_mal  "🔴 Sentinel: rqlite sin líder:" "Sin líder no se guarda telemetría ni responde el chatbot. $W"
+mandar cl_bien "🟢 Sentinel: rqlite de vuelta:" "$W"
+mandar rq_mal  "🔴 Sentinel: el clúster no alcanza el rqlite de:" "El agente del nodo sí responde: lo caído es su rqlited. $W"
+mandar rq_bien "🟢 Sentinel: rqlite de vuelta en el clúster:" "$W"
+mandar dt_mal  "🟠 Sentinel: el nodo responde, pero sus datos no llegan:" "Temperatura = thermal-guard; batería = Sentinel-Bateria. En Termux los dos van por cron: si se paró, tampoco corren ahí la elección, los avisos ni el vigilante. $W"
+mandar dt_bien "🟢 Sentinel: vuelven a llegar los datos de:" "$W"
+mandar ex_mal  "🔴 Sentinel: equipo sin responder:" "Dos sondeos fallidos. $W"
+mandar ex_bien "🟢 Sentinel: equipo recuperado:" "$W"
+mandar bt_mal  "🔋 Sentinel: enchufado pero perdiendo batería:" "Android corta la carga por encima de unos 42 °C. $W"
+mandar bt_bien "🔌 Sentinel: batería recuperada:" "$W"
+mandar recuerdo "🟠 Sentinel: sigue pendiente (recordatorio cada $(( RECORD / 3600 )) h):" "$W"
+
+# --- Cambio de Wheel ------------------------------------------------------
+# Quien paso por ultima vez se lee de rqlite (sentinel_vigia, la fila del latido),
+# que es comun a todos. alert.state es de cada nodo y cada uno solo apunta su
+# propio nombre, asi que comparando con el no salia nunca este aviso en un relevo
+# real. Sin rqlite se mira el fichero, como antes. Si el envio falla, el latido
+# guarda el Wheel anterior para que la pasada siguiente lo reintente.
+WANT=""
+if [ -n "${RQLITE:-}" ]; then
+  _v=$(curl -s -m 6 -G "$RQLITE/db/query" --data-urlencode "q=SELECT ts, wheel, pendientes FROM sentinel_vigia WHERE clave='avisos'" \
+        --data-urlencode "level=none" 2>/dev/null | grep -oE '"values":\[\[[^]]*' | sed 's/.*\[\[//' | tr -d '" ' | cut -d, -f2)
+  case "$_v" in ''|*[!A-Za-z0-9_.-]*) ;; *) WANT="$_v" ;; esac
+fi
+WLOCAL=$(printf '%s\n' "$ANTES" | sed -n 's/^__wheel__=//p' | head -1)
+[ -n "$WANT" ] || WANT="$WLOCAL"
+# Solo si de verdad acabo de llegar: mi alert.state no dice ya que soy yo (o es de
+# otra epoca). Si no, dos nodos que se creyeran Wheel a la vez y no se vieran se
+# anunciarian el relevo el uno al otro cada 5 min.
+NUEVO_W=0; { [ "$WLOCAL" != "$NAME" ] || [ "$STALE" = 1 ]; } && NUEVO_W=1
+WNUEVO="$NAME"; WLAT="$NAME"
+if [ -n "$WANT" ] && [ "$WANT" != "$NAME" ] && [ "$NUEVO_W" = 1 ]; then
+  if ! enviar wheel "🔵 Sentinel: el coordinador (Wheel) pasa de $WANT a $NAME."; then
+    WNUEVO="$WANT"; WLAT="$WANT"; FALLOS=$((FALLOS + 1))
+  fi
+fi
+
+# --- Estado nuevo (escritura atomica) -------------------------------------
+# En DRY no se guarda: daria por enviados avisos que solo se imprimieron, y una
+# prueba a mano en el Wheel se comeria la alerta real.
+if [ "$DRY" = "1" ]; then
+  echo "[DRY] alert.state no se guarda ($(grep -c "^S$TAB" "$OUT") claves)"
+elif {
+  while IFS="$TAB" read -r tag ca c f; do
+    [ "$tag" = S ] || continue
+    case "$OKC" in *" $ca "*) printf '%s\n' "$c" ;; *) printf '%s\n' "$f" ;; esac
+  done < "$OUT"
+  printf '__wheel__=%s\n' "$WNUEVO"
+} > "$STATE.tmp.$$" && mv "$STATE.tmp.$$" "$STATE"; then
+  rm -f "$BASE/bat.state" "$VACIO.b"    # ya importado como claves bt:
+fi
+
+if [ -f "$LOGF" ] && [ "$(wc -l < "$LOGF")" -gt 600 ]; then
+  tail -n 300 "$LOGF" > "$LOGF.tmp" 2>/dev/null && mv "$LOGF.tmp" "$LOGF"
+fi
+
+# --- Latido ---------------------------------------------------------------
+# La hora de esta pasada, para que alguien de FUERA pueda ver que los avisos
+# siguen corriendo (Sentinel-Latido.sh la lleva a la EC2). 'pendientes' = envios
+# que fallaron en esta pasada: si no baja de 0, Telegram no esta llegando.
+if [ "$DRY" != "1" ] && [ -n "${RQLITE:-}" ]; then
+  curl -s -m 8 -o /dev/null -XPOST "$RQLITE/db/execute" -H 'Content-Type: application/json' \
+    -d "[[\"CREATE TABLE IF NOT EXISTS sentinel_vigia (clave TEXT PRIMARY KEY, ts INTEGER NOT NULL, wheel TEXT, pendientes INTEGER)\"], [\"INSERT OR REPLACE INTO sentinel_vigia (clave, ts, wheel, pendientes) VALUES (?, ?, ?, ?)\", \"avisos\", $AHORA, \"$WLAT\", $FALLOS]]" 2>/dev/null
+fi
 exit 0
