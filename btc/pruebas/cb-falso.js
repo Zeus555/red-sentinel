@@ -5,7 +5,7 @@
 // Uso: node cb-falso.js <puerto> <fichero-estado>
 'use strict';
 const http = require('http');
-const { leeEstado, velas } = require('./serie-falsa');
+const { leeEstado, velas, PRODUCTOS } = require('./serie-falsa');
 
 const [puerto, festado] = process.argv.slice(2);
 let peticiones = 0, conClave = 0;
@@ -20,12 +20,12 @@ http.createServer((req, res) => {
   const e = leeEstado(festado);
   const m = u.pathname.match(/^\/products\/([A-Z0-9-]+)\/candles$/);
   if (e.fallo500) { res.writeHead(500); res.end('{"error":"INTERNAL"}'); return; }
-  if (!m || m[1] !== 'BTC-USD') { res.writeHead(404); res.end('{"error":"NOT_FOUND"}'); return; }
+  if (!m || !PRODUCTOS[m[1]]) { res.writeHead(404); res.end('{"error":"NOT_FOUND"}'); return; }
   if (u.searchParams.get('granularity') !== 'ONE_DAY') { res.writeHead(400); res.end('{"error":"granularity"}'); return; }
   const ini = +u.searchParams.get('start'), fin = +u.searchParams.get('end');
   if (!(fin > ini) || (fin - ini) / 86400 > 350) { res.writeHead(400); res.end('{"error":"INVALID_ARGUMENT","message":"too many candles"}'); return; }
   // Coinbase: velas con start en [start, end], la mas nueva primero.
-  let vs = velas(e).filter(v => v.t >= ini && v.t <= fin).reverse();
+  let vs = velas(e, m[1]).filter(v => v.t >= ini && v.t <= fin).reverse();
   // Fallos puntuales: todo vacio, o vacia solo la ventana que contiene un dia.
   if (e.vacio) vs = [];
   if (e.ventanaVacia && e.ventanaVacia >= ini && e.ventanaVacia <= fin) vs = [];

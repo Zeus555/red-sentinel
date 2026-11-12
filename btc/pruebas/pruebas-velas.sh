@@ -137,10 +137,13 @@ if [ "${libres:-0}" = 1 ]; then
   printf 'user = "fuga:x"\n' > "$T/casa/.curlrc"; cp "$T/casa/.curlrc" "$T/casa/_curlrc"
   corre(){ # corre <ahora> [opciones...]  -> $T/salida, devuelve el codigo del script
     a=$1; shift
+    # Por defecto solo BTC-USD, para que los conteos de peticiones y filas sean
+    # fijos; C16 prueba el spot y el perpetuo juntos (PRODS).
     env HOME="$T/casa" CURL_HOME="$T/casa" SENTINEL_BASE="$T/base" RQLITE="$RQ" RQLITE_CRED="${CRED:-$T/prueba.curlrc}" \
-        CB_API="http://127.0.0.1:$PCB" CB_PAUSA=0 CB_ESPERA=0 BTC_DIR="$T/dir" BTC_AHORA="$a" sh "$SCRIPT" "$@" > "$T/salida" 2>&1
+        CB_API="http://127.0.0.1:$PCB" CB_PAUSA=0 CB_ESPERA=0 BTC_DIR="$T/dir" BTC_AHORA="$a" \
+        BTC_PRODUCTOS="${PRODS:-BTC-USD}" sh "$SCRIPT" "$@" > "$T/salida" 2>&1
   }
-  comprueba(){ node "$AQUI/comprueba.js" "$RQ" "prueba:clave-prueba" "$E" 2>&1; }
+  comprueba(){ node "$AQUI/comprueba.js" "$RQ" "prueba:clave-prueba" "$E" "${1:-BTC-USD}" 2>&1; }
   sql1(){ curl -q -s -K "$T/prueba.curlrc" -G "$RQ/db/query" --data-urlencode "q=$1" | sed -n 's/.*"values":\[\[\([^]]*\)\]\].*/\1/p'; }
   ejecuta(){ printf '%s' "$1" | curl -q -s -K "$T/prueba.curlrc" -H 'Content-Type: application/json' --data-binary @- "$RQ/db/execute" > /dev/null; }
   huella(){ sql1 "SELECT COUNT(*), MAX(actualizado), SUM(cierre) FROM cripto_vela"; }
@@ -268,6 +271,23 @@ if [ "${libres:-0}" = 1 ]; then
   est "{\"ahora\":$AHORA1}"
   corre $AHORA1; r=$?
   coincide "C15 la pasada siguiente carga la historia completa" 0
+
+  # Spot y perpetuo de futuros juntos (lo que se usa por defecto en la red).
+  # El perpetuo empieza un viernes: su primera semana sale con 3 dias.
+  ejecuta '[["DROP TABLE cripto_vela"]]'
+  PRODS="BTC-USD BIP-20DEC30-CDE" corre $AHORA1; r=$?
+  igual "C16 spot y perpetuo en la misma pasada: sale bien" "0" "$r"
+  c1=$(comprueba BTC-USD); c2=$(comprueba BIP-20DEC30-CDE)
+  case "$c1|$c2" in coincide*\|coincide*) pasa "C16 las dos series coinciden con el calculo independiente ($c2)" ;; *) falla "C16 las dos series coinciden" "$c1 / $c2" ;; esac
+  igual "C16 la primera semana del perpetuo queda con los dias que tiene" "3" "$(sql1 "SELECT dias FROM cripto_vela WHERE producto='BIP-20DEC30-CDE' AND marco='1w' ORDER BY ts LIMIT 1")"
+  AHORA2=$((AHORA1 + 86400))
+  est "{\"ahora\":$AHORA2}"
+  PRODS="BTC-USD BIP-20DEC30-CDE" corre $AHORA2; r=$?
+  c1=$(comprueba BTC-USD); c2=$(comprueba BIP-20DEC30-CDE)
+  case "$r|$c1|$c2" in 0\|coincide*\|coincide*) pasa "C16 la pasada incremental de las dos series tambien coincide" ;; *) falla "C16 pasada incremental de las dos series" "r=$r $c1 / $c2" ;; esac
+  PRODS="BTC-USD NO-EXISTE" corre $AHORA2; r=$?
+  igual "C16 un producto que Coinbase no conoce sale con 1 sin tapar al otro" "1" "$r"
+  grep -q '^BTC-USD:' "$T/salida" && pasa "C16 el otro producto se proceso igual" || falla "C16 el otro producto se proceso igual" "$(cat "$T/salida")"
   fi
 fi
 

@@ -1,13 +1,22 @@
 #!/usr/bin/env sh
-# Sentinel BTC - velas diarias y semanales de BTC-USD (spot de Coinbase), con
-# Heikin Ashi, guardadas en el rqlite de la red.
+# Sentinel BTC - velas diarias y semanales de BTC en Coinbase, con Heikin Ashi,
+# guardadas en el rqlite de la red. Por defecto, dos series:
+#   BIP-20DEC30-CDE  el perpetuo de futuros de BTC de Coinbase en EE. UU. ("nano
+#                    BTC Perp", 0,01 BTC por contrato, sin vencimiento hasta
+#                    dic-2030). Es la serie para operar, tambien en corto. Su
+#                    historia empieza el 18/07/2025 (~70 semanas). El volumen va
+#                    en CONTRATOS, no en BTC.
+#   BTC-USD          el spot, desde el 20/07/2015. Hace falta para lo que pide
+#                    historia larga y el perpetuo no tiene: la EMA 100 y 200
+#                    semanal necesitan 100 y 200 semanas.
 #
-# QUE HACE, en cada pasada y por cada producto (por defecto solo BTC-USD):
+# QUE HACE, en cada pasada y por cada producto (BTC_PRODUCTOS):
 #   1. Lee de rqlite las velas diarias que ya hay (tabla cripto_vela, marco 1d).
 #   2. Pide a Coinbase lo que falta:
 #        - si no hay nada (o con --completo): toda la historia, hacia atras en
-#          ventanas de 300 dias hasta que Coinbase no devuelve nada. Para BTC-USD
-#          son ~4.100 dias desde el 20/07/2015 en ~15 peticiones;
+#          ventanas de 300 dias hasta dos ventanas vacias seguidas. Para BTC-USD
+#          son ~4.100 dias desde el 20/07/2015 en ~16 peticiones; para el
+#          perpetuo, ~480 dias en 4;
 #        - si ya hay: desde 3 dias antes de la ultima vela cerrada hasta ahora.
 #          Esos 3 dias de margen recogen la vela que se guardo a medias (la del
 #          dia en curso) y cualquier correccion tardia de Coinbase.
@@ -41,9 +50,13 @@
 #                 sin rqlited, la de un nodo, p. ej. http://192.168.0.21:4001)
 #   RQLITE_CRED   fichero curlrc del usuario de rqlite (por defecto
 #                 ~/.config/rqlite/sentinel.curlrc; necesita execute y query)
-#   BTC_PRODUCTOS productos de Coinbase separados por espacio (por defecto BTC-USD)
+#   BTC_PRODUCTOS productos de Coinbase separados por espacio (por defecto
+#                 "BIP-20DEC30-CDE BTC-USD"). Cuando el perpetuo cambie de
+#                 nombre (vence en dic-2030), se cambia aqui o en sentinel.conf.
 #   BTC_DIR       carpeta del log y del cerrojo (por defecto ~/PRC_Sentinel/btc)
-#   CB_API, CB_PAUSA, BTC_LOTE, BTC_AHORA   solo para pruebas
+#   BTC_MARGEN    segundos tras el fin de una vela para darla por cerrada (60)
+#   BTC_NODOS     (en sentinel.conf) unico nodo donde corre; los demas salen
+#   CB_API, CB_PAUSA, CB_ESPERA, BTC_LOTE, BTC_AHORA   solo para pruebas
 #
 # Codigos de salida: 0 bien; 1 fallo de red, de Coinbase o de rqlite (se puede
 # reintentar: escribir dos veces la misma vela no cambia nada); 2 datos que no
@@ -66,7 +79,7 @@ if [ -r "$CONF" ]; then . "$CONF"; fi
 RQ="${ENV_RQ:-${RQLITE:-http://127.0.0.1:4001}}"
 RQLITE_CRED="${ENV_CRED:-${RQLITE_CRED:-$HOME/.config/rqlite/sentinel.curlrc}}"
 CB="${CB_API:-https://api.coinbase.com/api/v3/brokerage/market}"
-PRODUCTOS="${BTC_PRODUCTOS:-BTC-USD}"
+PRODUCTOS="${BTC_PRODUCTOS:-BIP-20DEC30-CDE BTC-USD}"
 PAUSA="${CB_PAUSA:-1}"
 DIR="${BTC_DIR:-$HOME/PRC_Sentinel/btc}"
 LOTE="${BTC_LOTE:-200}"
@@ -84,7 +97,7 @@ VENTANA=300          # dias por peticion (Coinbase acepta hasta 350)
 MAXV=60              # tope de ventanas hacia atras (~49 años): evita un bucle sin fin
 LOG="$DIR/velas.log"
 
-uso(){ sed -n '2,46p' "$0" | sed 's/^# \{0,1\}//'; }
+uso(){ awk 'NR > 1 && !/^#/ { exit } NR > 1 { sub(/^# ?/, ""); print }' "$0"; }
 
 MODO=incremental; SECO=0
 for a in "$@"; do

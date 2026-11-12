@@ -10,35 +10,51 @@ const INICIO = 1672617600; // 2023-01-02, lunes
 function lcg(seed) { let s = seed >>> 0; return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; }; }
 const r2 = x => Math.round(x * 100) / 100;
 
-// estado: { ahora, quitar: [ts], cambiar: { ts: {o,h,l,c,v} }, fallo500, invalida }
+// estado: { ahora, quitar: [ts], cambiar: { ts: {o,h,l,c,v} }, fallo500, invalida, vacio, ventanaVacia }
+// quitar y cambiar solo se aplican a BTC-USD.
 function leeEstado(f) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return {}; } }
 
+// Productos que sirve el Coinbase falso. El perpetuo imita al de verdad
+// (BIP-20DEC30-CDE): precios en saltos de $5 y volumen en contratos enteros.
+const PRODUCTOS = {
+  'BTC-USD': { inicio: INICIO, semilla: 12345, p0: 95000, tick: 0.01, vol: 1e8 },
+  'BIP-20DEC30-CDE': { inicio: 1752796800, semilla: 777, p0: 118000, tick: 5, vol: 1 }, // 18/07/2025, viernes
+};
+
 // Velas diarias con ts <= ahora; la del dia de "ahora" va a medias.
-function velas(estado) {
+function velas(estado, producto = 'BTC-USD') {
+  const cfg = PRODUCTOS[producto];
+  if (!cfg) return [];
   const ahora = estado.ahora;
-  const rnd = lcg(12345);
+  const rnd = lcg(cfg.semilla);
+  // Redondeo al tick: con 0,01 se usa r2 (dos decimales exactos); con 5, enteros.
+  const rt = cfg.tick === 0.01 ? r2 : x => Math.round(x / cfg.tick) * cfg.tick;
+  const rv = x => Math.round(x * cfg.vol) / cfg.vol;
   const out = [];
   // Precios realistas (como BTC hoy): con precios bajos un fallo de precision
   // en las cifras decimales pasaria inadvertido.
-  let prev = 95000;
-  for (let t = INICIO; t <= ahora; t += DIA) {
+  let prev = cfg.p0;
+  for (let t = cfg.inicio; t <= ahora; t += DIA) {
     let r = (rnd() - 0.5) * 0.08; const u1 = rnd(), u2 = rnd(), u3 = rnd();
     if (prev * (1 + r) < 10000) r = Math.abs(r);
-    const o = r2(prev);
-    let c = r2(o * (1 + r));
-    let h = r2(Math.max(o, c) + u1 * 0.02 * o);
-    let l = r2(Math.max(0.01, Math.min(o, c) - u2 * 0.02 * o));
-    let v = Math.round((1000 + u3 * 500) * 1e8) / 1e8;
+    const o = rt(prev);
+    let c = rt(o * (1 + r));
+    let h = rt(Math.max(o, c) + u1 * 0.02 * o);
+    let l = rt(Math.max(cfg.tick, Math.min(o, c) - u2 * 0.02 * o));
+    let v = rv(1000 + u3 * 500);
     prev = c;
     if (t + DIA > ahora) {            // vela en curso
       const fr = (ahora - t) / DIA;
-      c = r2(o + (c - o) * fr); h = r2(Math.max(o, c, o + (h - Math.max(o, c)) * fr)); l = r2(Math.min(o, c, o - (Math.min(o, c) - l) * fr));
-      v = Math.round(v * fr * 1e8) / 1e8;
+      c = rt(o + (c - o) * fr); h = rt(Math.max(o, c, o + (h - Math.max(o, c)) * fr)); l = rt(Math.min(o, c, o - (Math.min(o, c) - l) * fr));
+      h = Math.max(h, o, c); l = Math.min(l, o, c);
+      v = rv(v * fr);
     }
     let vela = { t, o, h, l, c, v };
-    const cam = (estado.cambiar || {})[String(t)];
-    if (cam) vela = Object.assign(vela, cam);
-    if ((estado.quitar || []).includes(t)) continue;
+    if (producto === 'BTC-USD') {
+      const cam = (estado.cambiar || {})[String(t)];
+      if (cam) vela = Object.assign(vela, cam);
+      if ((estado.quitar || []).includes(t)) continue;
+    }
     out.push(vela);
   }
   return out;
@@ -72,4 +88,4 @@ function esperadas(vs, ahora) {
   return filas;
 }
 
-module.exports = { DIA, INICIO, leeEstado, velas, esperadas };
+module.exports = { DIA, INICIO, PRODUCTOS, leeEstado, velas, esperadas };

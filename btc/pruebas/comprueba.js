@@ -1,18 +1,18 @@
-// Compara TODO lo que hay en cripto_vela (producto BTC-USD) con el calculo de
+// Compara TODO lo que hay en cripto_vela (un producto, BTC-USD por defecto) con el calculo de
 // referencia de serie-falsa.js. Sale con 0 si coincide fila a fila.
-// Uso: node comprueba.js <url-rqlite> <usuario:clave> <fichero-estado>
+// Uso: node comprueba.js <url-rqlite> <usuario:clave> <fichero-estado> [producto]
 'use strict';
 const { leeEstado, velas, esperadas } = require('./serie-falsa');
 
-const [rq, cred, festado] = process.argv.slice(2);
+const [rq, cred, festado, producto = 'BTC-USD'] = process.argv.slice(2);
 const e = leeEstado(festado);
 
 (async () => {
-  const q = [['SELECT marco,ts,apertura,maximo,minimo,cierre,volumen,ha_apertura,ha_maximo,ha_minimo,ha_cierre,cerrada,dias FROM cripto_vela WHERE producto=? ORDER BY marco,ts', 'BTC-USD']];
+  const q = [['SELECT marco,ts,apertura,maximo,minimo,cierre,volumen,ha_apertura,ha_maximo,ha_minimo,ha_cierre,cerrada,dias FROM cripto_vela WHERE producto=? ORDER BY marco,ts', producto]];
   const r = await fetch(rq + '/db/query?level=strong', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Basic ' + Buffer.from(cred).toString('base64') }, body: JSON.stringify(q) });
   const j = await r.json();
   const got = (j.results[0].values || []).map(a => ({ marco: a[0], ts: a[1], o: a[2], h: a[3], l: a[4], c: a[5], v: a[6], ho: a[7], hh: a[8], hl: a[9], hc: a[10], cerrada: a[11], dias: a[12] }));
-  const exp = esperadas(velas(e), e.ahora).sort((a, b) => a.marco < b.marco ? -1 : a.marco > b.marco ? 1 : a.ts - b.ts);
+  const exp = esperadas(velas(e, producto), e.ahora).sort((a, b) => a.marco < b.marco ? -1 : a.marco > b.marco ? 1 : a.ts - b.ts);
   const fallos = [];
   if (got.length !== exp.length) fallos.push(`filas: rqlite ${got.length}, esperadas ${exp.length}`);
   const n = Math.min(got.length, exp.length);

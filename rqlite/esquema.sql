@@ -172,12 +172,14 @@ CREATE TABLE sentinel_respaldo (fichero TEXT PRIMARY KEY, ts INTEGER NOT NULL, f
 
 
 -- ---------------------------------------------------------------------
--- VELAS DE BTC (spot de Coinbase), diarias y semanales con Heikin Ashi. La
--- escribe btc/Sentinel-BTC-Velas.sh (usuario sentinel), que la crea si no existe.
--- Una fila por producto, marco ('1d' o '1w', semana de lunes 00:00 UTC) y ts
--- (inicio de la vela, segundos UTC). cerrada=0 es la vela en curso. dias solo
--- en '1w': cuantos dias la forman (7 = completa). ~4.700 filas para BTC-USD
--- desde 2015 y ~8 filas nuevas por semana. Anadida el 2026-11-12.
+-- VELAS DE BTC de Coinbase, diarias y semanales con Heikin Ashi: el perpetuo
+-- de futuros (BIP-20DEC30-CDE, volumen en contratos de 0,01 BTC) y el spot
+-- (BTC-USD). La escribe btc/Sentinel-BTC-Velas.sh (usuario sentinel), que la
+-- crea si no existe. Una fila por producto, marco ('1d' o '1w', semana de lunes
+-- 00:00 UTC) y ts (inicio de la vela, segundos UTC). cerrada=0 es la vela en
+-- curso. dias solo en '1w': cuantos dias la forman (7 = completa). ~4.700 filas
+-- de BTC-USD desde 2015 y ~550 del perpetuo desde 18/07/2025; ~16 filas nuevas
+-- por semana. Anadida el 2026-11-12.
 -- ---------------------------------------------------------------------
 
 CREATE TABLE cripto_vela (producto TEXT NOT NULL, marco TEXT NOT NULL, ts INTEGER NOT NULL, apertura REAL NOT NULL, maximo REAL NOT NULL, minimo REAL NOT NULL, cierre REAL NOT NULL, volumen REAL NOT NULL, ha_apertura REAL, ha_maximo REAL, ha_minimo REAL, ha_cierre REAL, cerrada INTEGER NOT NULL, dias INTEGER, fuente TEXT, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, marco, ts)) WITHOUT ROWID;
