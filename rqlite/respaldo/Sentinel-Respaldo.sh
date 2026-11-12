@@ -18,6 +18,16 @@
 # nada, y una con la base encogida frena la retencion, para que las copias buenas
 # no roten mientras alguien mira que paso.
 #
+# CREDENCIALES DE rqlite: RQ_CRED (por defecto "$BASE/rqlite-respaldo.curlrc";
+# se puede cambiar en .env) es un fichero con UNA linea en formato de curl:
+#     user = "respaldo:<clave>"
+# El usuario respaldo tiene justo backup y execute: la copia y el INSERT en
+# sentinel_respaldo, las dos unicas llamadas a rqlite. Se le pasa a curl.exe con
+# -K y la ruta convertida con win(), asi la clave nunca sale en la linea de
+# comandos. Solo va a rqlite: ni a Telegram ni a la EC2. Sin fichero se pregunta
+# sin credenciales, como siempre (un rqlited sin -auth no las pide). Un 401 tiene
+# su propio aviso: no es lo mismo que un nodo caido.
+#
 # Uso:  Sentinel-Respaldo.sh                 pasada normal (la lanza la tarea)
 #       DRY=1 Sentinel-Respaldo.sh           imprime los avisos en vez de enviarlos
 #       Sentinel-Respaldo.sh --plan D W M    ensaya la retencion: lee nombres por
@@ -61,6 +71,9 @@ NODE_BIN="${NODE_BIN:-$HOME/node/node.exe}"
 [ -x "$NODE_BIN" ] || NODE_BIN=$(command -v node)
 
 win(){ cygpath -m "$1"; }
+# Credenciales de rqlite (ver la cabecera): solo si el fichero es legible.
+RQ_CRED="${RQ_CRED:-$BASE/rqlite-respaldo.curlrc}"
+rqcurl(){ if [ -r "$RQ_CRED" ]; then curl -K "$(win "$RQ_CRED")" "$@"; else curl "$@"; fi; }
 anota(){ printf '%s %s\n' "$(date '+%F %T')" "$1" | tee -a "$LOG"; }
 ec2(){ ssh -n -o LogLevel=ERROR -o BatchMode=yes -o ConnectTimeout=20 "$EC2_HOST" "$1"; }
 
@@ -70,8 +83,32 @@ avisar(){ # $1 = texto
     anota "sin credenciales de Telegram: no se pudo avisar"
     return 1
   fi
-  curl -sS -m 20 -o /dev/null --data-urlencode "chat_id=$TG_CHAT_ID" --data-urlencode "text=$1" \
-    "https://api.telegram.org/bot$TG_BOT_TOKEN/sendMessage" 2>>"$LOG"
+  # curl.exe (mingw, sin "Unicode" en sus Features) recibe argv ya pasado a la pagina
+  # de codigos de Windows (1252). Un texto con tildes, "•" o emoji le llegaba a Telegram
+  # en bytes que no son UTF-8, y Telegram lo rechazaba con 400 ("strings must be encoded
+  # in UTF-8"). Ademas -o /dev/null hacia salir a curl con 23 y nadie se enteraba (visto
+  # el 2026-11-11). Por eso el texto va en un fichero (text@fichero: curl lo lee tal
+  # cual) y el aviso solo cuenta como enviado con 200 y "ok":true; si no, queda en el log.
+  mkdir -p "$TMP" 2>/dev/null
+  local f="$TMP/aviso.txt" r cod
+  rm -f "$f"
+  if command -v iconv >/dev/null 2>&1; then
+    # Quita los bytes que no sean UTF-8 (cut -c de Git Bash corta por bytes y puede partir
+    # una letra). iconv -c sale con 1 cuando quita algo: no se mira su codigo, sino que el
+    # fichero exista.
+    printf '%s' "$1" | iconv -f UTF-8 -t UTF-8 -c > "$f" 2>/dev/null
+  else
+    printf '%s' "$1" > "$f"
+  fi
+  [ -f "$f" ] || { anota "aviso de Telegram NO enviado: no se pudo escribir $f"; return 1; }
+  r=$(curl -sS -m 20 -w '\n%{http_code}' --data-urlencode "chat_id=$TG_CHAT_ID" \
+      --data-urlencode "text@$(win "$f")" \
+      "https://api.telegram.org/bot$TG_BOT_TOKEN/sendMessage" 2>>"$LOG")
+  rm -f "$f"
+  cod=${r##*$'\n'}
+  if [ "$cod" = "200" ]; then case "$r" in *'"ok":true'*) return 0 ;; esac; fi
+  anota "aviso de Telegram NO enviado (http ${cod:-000}): $(printf '%s' "${r%$'\n'*}" | tr -d '\r\n' | cut -c1-200)"
+  return 1
 }
 
 # Lee nombres por stdin y escribe los que SOBRAN. Se recorren de nuevo a viejo: la
@@ -116,7 +153,7 @@ FINAL="$DIR/$NOMBRE.sqlite.gz"
 MANIF="$DIR/$NOMBRE.json"
 PART="$TMP/copia.gz"
 DB="$TMP/copia.sqlite"
-PROBLEMAS=""; AVISOS=""; FUENTE=""; BYTES=0; SHA=""; RC_VERIF=1; OFFSITE=0
+PROBLEMAS=""; AVISOS=""; FUENTE=""; BYTES=0; SHA=""; RC_VERIF=1; OFFSITE=0; RECHAZO401=0
 
 problema(){ anota "PROBLEMA: $1"; PROBLEMAS="$PROBLEMAS
   • $1"; }
@@ -146,9 +183,16 @@ fi
 bajar(){
   src=$1
   rm -f "$PART" "$DB" "$DB-wal" "$DB-shm" "$TMP/manif.json"
-  if ! curl -sS -f -m 900 --limit-rate "$LIMITE_BAJADA" -o "$(win "$PART")" \
-       "http://$src:$RQ_PUERTO/db/backup?noleader&compress" 2>>"$LOG"; then
-    anota "$src: fallo la descarga"; return 1
+  # Con -f curl sale con 22 ante cualquier error HTTP; -w dice si fue un 401.
+  cod=$(rqcurl -sS -f -m 900 --limit-rate "$LIMITE_BAJADA" -w '%{http_code}' -o "$(win "$PART")" \
+       "http://$src:$RQ_PUERTO/db/backup?noleader&compress" 2>>"$LOG"); rc=$?
+  if [ "$rc" != "0" ]; then
+    if [ "$(printf '%s' "$cod" | tr -d '\r ')" = "401" ]; then
+      RECHAZO401=1; anota "$src: rqlite rechaza la contraseña del usuario respaldo (401)"
+    else
+      anota "$src: fallo la descarga"
+    fi
+    return 1
   fi
   gzip -t "$PART" 2>>"$LOG" || { anota "$src: el gzip no es valido"; return 1; }
   gzip -dc "$PART" > "$DB" 2>>"$LOG" || { anota "$src: no se pudo descomprimir"; return 1; }
@@ -174,7 +218,11 @@ while [ -z "$FUENTE" ] && [ "$ronda" -le "$RONDAS" ]; do
   ronda=$(( ronda + 1 ))
 done
 if [ -z "$FUENTE" ]; then
-  problema "ninguna copia valida tras $RONDAS rondas (fuentes: $FUENTES)"
+  if [ "$RECHAZO401" = "1" ]; then
+    problema "ninguna copia valida tras $RONDAS rondas (fuentes: $FUENTES): rqlite rechaza la contraseña del usuario respaldo (401). Revisar $(win "$RQ_CRED")"
+  else
+    problema "ninguna copia valida tras $RONDAS rondas (fuentes: $FUENTES)"
+  fi
   terminar
 fi
 
@@ -214,12 +262,19 @@ subir
 
 # --- Registro: de aqui lee el vigia de sentinel014 ---------------------------
 AVISO_SQL=$(printf '%s' "$AVISOS" | tr -d '"\\' | tr '\n\r' '  ' | cut -c1-300)
-R=$(curl -sS -m 20 -H 'Content-Type: application/json' \
+# El codigo HTTP va en la ultima linea: un 401 llega con el cuerpo vacio.
+R=$(rqcurl -sS -m 20 -w '\n%{http_code}' -H 'Content-Type: application/json' \
   -d "[[\"INSERT INTO sentinel_respaldo(ts,fichero,fuente,bytes,sha256,offsite,aviso) VALUES(?,?,?,?,?,?,?)\",$(date +%s),\"$NOMBRE.sqlite.gz\",\"$FUENTE\",$BYTES,\"$SHA\",$OFFSITE,\"$AVISO_SQL\"]]" \
   "http://$FUENTE:$RQ_PUERTO/db/execute" 2>>"$LOG")
+COD=$(printf '%s' "$R" | tail -n 1 | tr -d '\r ')
+R=$(printf '%s\n' "$R" | sed '$d')
 case "$R" in
   *'"rows_affected":1'*) : ;;
-  *) problema "copia hecha, pero no se pudo registrar en rqlite: $(printf '%s' "$R" | cut -c1-120)" ;;
+  *) if [ "$COD" = "401" ]; then
+       problema "copia hecha, pero rqlite rechaza la contraseña del usuario respaldo (401): no quedó registrada y el vigía de sentinel014 avisará de que no hay copia reciente. Revisar $(win "$RQ_CRED")"
+     else
+       problema "copia hecha, pero no se pudo registrar en rqlite (HTTP ${COD:-?}): $(printf '%s' "$R" | cut -c1-120)"
+     fi ;;
 esac
 
 # --- Retencion -------------------------------------------------------------

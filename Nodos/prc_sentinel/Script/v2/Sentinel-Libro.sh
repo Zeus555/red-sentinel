@@ -37,6 +37,12 @@ EXC="${LIBRO_EXCHANGE:-coinbase}"
 PASO="${CRIPTO_SEGUNDOS:-10}"
 DIAS="${CRIPTO_RETENCION_DIAS:-90}"
 
+# Credenciales de rqlite: fichero 600 con una linea  user = "usuario:clave".
+# Van por -K, asi no salen en ps. Sin fichero se pregunta sin credenciales, como
+# siempre: un rqlited sin -auth las ignora de todos modos.
+RQLITE_CRED="${RQLITE_CRED:-$HOME/.config/rqlite/sentinel.curlrc}"
+rqcurl(){ if [ -r "$RQLITE_CRED" ]; then curl -K "$RQLITE_CRED" "$@"; else curl "$@"; fi; }
+
 # Me toca? Los mismos nodos que recolectan precio, mas el Wheel.
 W=""; [ -r "$BASE/wheel.state" ] && W=$(tr -d '[:space:]' < "$BASE/wheel.state")
 me=0
@@ -54,7 +60,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM HUP
 
-sql(){ curl -s -m 10 -o /dev/null -H "Content-Type: application/json" -d "$1" "$RQ/db/execute"; }
+sql(){ rqcurl -s -m 10 -o /dev/null -H "Content-Type: application/json" -d "$1" "$RQ/db/execute"; }
 
 # num <json> <campo>  ->  el valor numerico, venga entrecomillado o no.
 # La API devuelve los precios como texto ("ask":"78201.02") pero los contadores

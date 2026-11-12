@@ -29,11 +29,12 @@
 -- sorteo no lleva DEFAULT en creado_en: la fecha se manda en el propio INSERT.
 -- Este fichero ya refleja las versiones corregidas. NO reintroducir 'now'.
 --
--- COMO SE APLICA
---   rqlite -H <ip> -p 4001 < esquema.sql
--- o sentencia a sentencia:
---   curl -XPOST '<ip>:4001/db/execute' -H 'Content-Type: application/json' \
---        -d '["CREATE TABLE ..."]'
+-- COMO SE APLICA (con contraseña desde el 2026-11-11: desde la laptop, con admin y
+-- contra un votante; ver rqlite/auth/README.md, "Operaciones a mano con la puerta cerrada")
+--   curl -K ~/.config/rqlite/admin.curlrc -XPOST 'http://<ip-votante>:4001/db/execute' \
+--        -H 'Content-Type: application/json' -d '["CREATE TABLE ..."]'
+-- El shell "rqlite -H <ip> -p 4001 < esquema.sql" solo acepta la clave con -u (queda
+-- en argv): mejor no usarlo.
 -- =====================================================================
 
 

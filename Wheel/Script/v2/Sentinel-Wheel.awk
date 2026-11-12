@@ -8,7 +8,8 @@
 #
 # Invocacion (la lanza el propio aceptador cada ElectSecs):
 #   gawk -v self=<nombre> -v port=8181 -v token=<token> -v peers=peers.tsv \
-#        -v state=wheel.state [-v debug=1] -f Sentinel-Wheel.awk
+#        -v state=wheel.state [-v rqlite=<url> -v rqcred=<ruta del curlrc>] \
+#        [-v debug=1] -f Sentinel-Wheel.awk
 #
 # No hay consenso ni votacion: todos los nodos puntuan con la MISMA formula sobre
 # los MISMOS datos publicos (/fitness), asi que convergen solos al mismo ganador.
@@ -40,18 +41,31 @@ function Prueba(ip,   r){
 	return Sondeo(ip, Tout*2)
 }
 
-function WheelAlcanzable(ip,   c,resp,l,n,i,tr){
+function RqNodes(tout,espera,   c,l,resp){
+	# GET /nodes de rqlite. Devuelve el cuerpo y deja el codigo HTTP en RqHttp
+	# ("000" si no contesto). El codigo llega en su propia linea "HTTP:xxx" (-w) y
+	# se aparta aqui: no puede colarse ni en las IP ni en el split por "}".
+	# Las credenciales van por RUTA (-K '<fichero>'), nunca su contenido.
+	c = "curl -s -m " tout " " RqK "-w '\\nHTTP:%{http_code}' '" Rqlite "/nodes?nonvoters&timeout=" espera "'"
+	resp=""; RqHttp="000"
+	while ((c | getline l) > 0){
+		if (l ~ /^HTTP:[0-9][0-9][0-9]$/){ RqHttp = substr(l, 6); continue }
+		resp = resp l
+	}
+	close(c)
+	return resp
+}
+
+function WheelAlcanzable(ip,   resp,n,i,tr){
 	# ¿Lo alcanza el clúster rqlite? Raft habla por el 4002 y nuestro sondeo por
 	# el 8181: son caminos INDEPENDIENTES. Si yo no veo al Wheel pero Raft si lo
 	# alcanza, la ceguera es mia (WiFi del telefono) y no del coordinador, asi
-	# que no hay nada que relevar. Vale -1 cuando no hay fuente fiable: en ese
-	# caso no opina y se decide como antes.
+	# que no hay nada que relevar. Vale -1 cuando no hay fuente fiable (cualquier
+	# respuesta que no sea un 200): en ese caso no opina y se decide como antes.
 	if (Rqlite=="" || ip=="") return -1
-	c = "curl -s -m " ToutRq " '" Rqlite "/nodes?nonvoters&timeout=5s'"
-	resp=""
-	while ((c | getline l) > 0) resp = resp l
-	close(c)
-	if (resp=="") return -1
+	resp = RqNodes(ToutRq, "5s")
+	if (RqHttp == "401") printf "[wheel] rqlite rechaza las credenciales (401): sin segunda opinion sobre el Wheel. Revisar %s\n", RqCredTxt
+	if (RqHttp != "200" || resp=="") return -1
 	n = split(resp, tr, "}")
 	for (i=1;i<=n;i++){
 		# 'ip ":"' y no solo 'ip': sin los dos puntos, 192.168.1.9 casaria dentro
@@ -163,6 +177,11 @@ BEGIN {
 	Cidr     = cidr
 	Spool    = (length(spool)==0) ? "/tmp" : spool
 	Rqlite   = rqlite         # el cluster ya sabe que nodos hay: sale mas barato que barrer
+	# Credenciales de rqlite: la RUTA del fichero (la calcula elect.sh). Va entre
+	# comillas simples en el comando de curl, asi que una ruta con comilla simple
+	# no se usa (se pregunta sin credenciales, como siempre).
+	RqK = (rqcred != "" && index(rqcred, "'") == 0) ? "-K '" rqcred "' " : ""
+	RqCredTxt = (RqK != "") ? rqcred : "~/.config/rqlite/sentinel.curlrc o RQLITE_CRED (no hay fichero utilizable)"
 	# Rondas seguidas que el Wheel reinante puede faltar antes de relevarlo.
 	MaxMiss  = (length(maxmiss)==0) ? 2 : maxmiss+0
 	MissFile = State ".miss"
@@ -185,12 +204,16 @@ BEGIN {
 	# aparte y con calma.
 	# 'nonvoters' es obligatorio: sin el, /nodes solo lista los nodos con voto (3 desde
 	# el 2026-10-30) y el resto de la flota dejaria de contar como candidato.
+	# Con 401 (credenciales rechazadas) los candidatos salen solo de peers.tsv,
+	# como con rqlite caido, y queda SIEMPRE una linea en elect.log: no es "rqlite
+	# caido" y pide otra cosa (revisar el fichero de credenciales).
 	nrq=0
 	if (Rqlite != ""){
-		c = "curl -s -m 6 '" Rqlite "/nodes?nonvoters&timeout=2s'"
-		resp=""
-		while ((c | getline l) > 0) resp = resp l
-		close(c)
+		resp = RqNodes(6, "2s")
+		if (RqHttp == "401"){
+			printf "[wheel] rqlite rechaza las credenciales (401): candidatos solo de peers.tsv. Revisar %s\n", RqCredTxt
+			resp = ""
+		}
 		nrq=0
 		while (match(resp, /([0-9]+\.[0-9]+\.[0-9]+\.[0-9]+)/, mm)){
 			# Cada nodo sale dos veces (api_addr y addr): se cuentan direcciones distintas.

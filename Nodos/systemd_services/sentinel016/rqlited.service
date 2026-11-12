@@ -4,7 +4,7 @@ After=network.target
 
 [Service]
 Type=simple
-ExecStart=/home/sentinel/go/bin/rqlited -node-id node7 -http-addr 0.0.0.0:4001 -http-adv-addr 192.168.0.159:4001 -raft-addr 0.0.0.0:4002 -raft-heartbeat-timeout=4s -raft-election-timeout=4s -raft-leader-lease-timeout=4s -raft-adv-addr 192.168.0.159:4002 -join 192.168.0.21:4002,192.168.0.166:4002 /home/sentinel/rqlite-data
+ExecStart=/home/sentinel/go/bin/rqlited -node-id node7 -http-addr 0.0.0.0:4001 -http-adv-addr 192.168.0.159:4001 -raft-addr 0.0.0.0:4002 -raft-heartbeat-timeout=4s -raft-election-timeout=4s -raft-leader-lease-timeout=4s -raft-adv-addr 192.168.0.159:4002 -join 192.168.0.21:4002,192.168.0.166:4002 -auth /home/sentinel/.config/rqlite/auth.json -join-as nodo /home/sentinel/rqlite-data
 Restart=on-failure
 RestartSec=5
 

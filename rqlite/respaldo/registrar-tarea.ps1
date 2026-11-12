@@ -6,6 +6,11 @@
 # lo que ya se va a borrar, y fuera de la franja 02:00-03:00 que el cambio de hora
 # se salta o repite. StartWhenAvailable hace que, si el equipo estaba apagado a esa
 # hora, la copia salga en cuanto vuelva.
+# OJO (visto el 2026-11-11): -At '03:45' guarda el StartBoundary con el desfase horario y
+# el Programador lo trata como "sincronizar entre zonas horarias": la tarea quedo atada a
+# las 10:45 UTC (registrada el 30/10, en verano). En invierno sale a las 02:45, ANTES de
+# la poda de las 03:30. Para que siga a la hora local habria que registrarla con un
+# StartBoundary sin desfase.
 $ErrorActionPreference = 'Stop'
 $root = 'D:\RED Respaldo'
 $nombre = 'RED Respaldo - rqlite'

@@ -21,5 +21,11 @@
 # de un solo líder y ~550 cambios de líder al día. Los tres van juntos: con latido
 # a 4 s los latidos salen cada 0,4-0,8 s y un lease de 500 ms haría dimitir al
 # líder todavía más. Raft exige lease <= latido <= elección.
+#
+# CONTRASEÑA (2026-11-11): -auth y -join-as nodo, siempre antes del directorio de
+# datos. ~/.config/rqlite/auth.json NO está en el repo (lleva las claves): se copia
+# antes de arrancar, el de no votante (o el de votante en sentinel005), ver
+# rqlite/auth/README.md. Sin el fichero rqlited no arranca; sin -join-as el join
+# falla, el nodo muere a los ~12 s y runit lo relanza en bucle.
 exec 2>&1
-exec /data/data/com.termux/files/home/go/bin/rqlited -node-id nodeN -raft-non-voter=true -http-addr 0.0.0.0:4001 -http-adv-addr <IP>:4001 -raft-addr 0.0.0.0:4002 -raft-heartbeat-timeout=4s -raft-election-timeout=4s -raft-leader-lease-timeout=4s -raft-adv-addr <IP>:4002 -join 192.168.0.21:4002,192.168.0.159:4002,192.168.0.166:4002 /data/data/com.termux/files/home/rqlite-data
+exec /data/data/com.termux/files/home/go/bin/rqlited -node-id nodeN -raft-non-voter=true -http-addr 0.0.0.0:4001 -http-adv-addr <IP>:4001 -raft-addr 0.0.0.0:4002 -raft-heartbeat-timeout=4s -raft-election-timeout=4s -raft-leader-lease-timeout=4s -raft-adv-addr <IP>:4002 -join 192.168.0.21:4002,192.168.0.159:4002,192.168.0.166:4002 -auth /data/data/com.termux/files/home/.config/rqlite/auth.json -join-as nodo /data/data/com.termux/files/home/rqlite-data

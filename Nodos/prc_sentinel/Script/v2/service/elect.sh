@@ -13,6 +13,18 @@ CONF="$BASE/sentinel.conf"
 [ -r "$BASE/fleet.token" ] && TOKEN=$(cat "$BASE/fleet.token")
 [ -n "${TOKEN:-}" ] || exit 0
 
+# Credenciales de rqlite: fichero 600 con una linea  user = "usuario:clave".
+# gawk lanza sus curl con /bin/sh -c, asi que se le pasa la RUTA del fichero
+# (curl -K), nunca su contenido: la clave no sale en ps ni en ningun comando.
+# La ruta va entre comillas simples en ese comando: si trae una comilla simple
+# (o una barra invertida, que gawk -v interpretaria) no se usa y se pregunta sin
+# credenciales, como siempre; lo mismo si el fichero no existe o no se puede leer.
+RQLITE_CRED="${RQLITE_CRED:-$HOME/.config/rqlite/sentinel.curlrc}"
+RQCRED=""
+if [ -r "$RQLITE_CRED" ]; then
+  case "$RQLITE_CRED" in *"'"*|*'\'*) ;; *) RQCRED="$RQLITE_CRED" ;; esac
+fi
+
 # --- Reparto en el tiempo -------------------------------------------------
 # Sin esto los 11 nodos disparan en el MISMO segundo :00 y cada equipo recibe una
 # veintena de peticiones a la vez sobre un aceptador monohilo. Medido el 17/08:
@@ -55,7 +67,7 @@ LOG="$BASE/elect.log"
 # fechada la primera — justo las marcas que hacen falta para analizar despues.
   gawk -v self="${NAME}" -v port="${PORT:-8181}" -v token="$TOKEN" \
        -v peers="$BASE/peers.tsv" -v state="$BASE/wheel.state" \
-       -v rqlite="${RQLITE:-}" -v discover="$BASE/Sentinel-Discover.awk" \
+       -v rqlite="${RQLITE:-}" -v rqcred="$RQCRED" -v discover="$BASE/Sentinel-Discover.awk" \
        -v cidr="${CIDR:-}" -v spool="$BASE/jobs" \
   -f "$BASE/Sentinel-Wheel.awk" 2>&1 \
   | awk -v t="$(date '+%m-%d %H:%M:%S')" '{print t, $0}' >> "$LOG"

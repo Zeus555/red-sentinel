@@ -8,7 +8,8 @@
 #              mini-PC caidos a la vez;
 #   avisos   - llegan latidos, pero la ultima pasada de avisos del Wheel es de hace
 #              mas de AVISOS_MAX: el Wheel no esta vigilando (cron parado...) o no
-#              puede apuntarlo (rqlite sin lider: lo dice el readyz del latido).
+#              puede apuntarlo (rqlite sin lider, rqlited caido o credenciales
+#              rechazadas: lo dice el ultimo campo del latido, 503 / 000 / 401).
 #              40 min porque un relevo normal de Wheel deja hasta ~30 min sin
 #              pasadas (2 rondas de eleccion, 7 min de asentamiento y los cron);
 #              con 20 avisaba en buena parte de los relevos;
@@ -59,7 +60,10 @@ enviar(){ # $1 = texto; 0 solo si Telegram confirma
 }
 
 # --- Leer los latidos -----------------------------------------------------
-ULT=0; ULT_NODO="-"; AV=0; AV_W="-"; PEND=0; RZ_MAL=""; RZ_LISTA=""
+# RZ_SL: latidos frescos sin lider o con el rqlited caido. RZ_401: los que tienen
+# las credenciales rechazadas, que no es "sin lider" y pide otra cosa (revisar el
+# fichero de credenciales).
+ULT=0; ULT_NODO="-"; AV=0; AV_W="-"; PEND=0; RZ_LISTA=""; RZ_SL=""; RZ_401=""
 for f in "$D"/sentinel*.latido; do
   [ -f "$f" ] || continue
   read -r recv nodo ts wh pe rz < "$f" || continue
@@ -72,8 +76,15 @@ for f in "$D"/sentinel*.latido; do
   if [ "$ts" -gt "$AV" ]; then AV=$ts; AV_W=$wh; PEND=$pe; fi
   case "${rz:-}" in [0-9][0-9][0-9]) ;; *) rz=200 ;; esac   # latido viejo de 4 campos
   RZ_LISTA="$RZ_LISTA $nodo=$rz"
-  [ "$rz" = 200 ] || RZ_MAL="$RZ_MAL $nodo (readyz $rz)"
+  case "$rz" in
+    200) ;;
+    401) RZ_401="$RZ_401 $nodo" ;;
+    *)   RZ_SL="$RZ_SL $nodo (readyz $rz)" ;;
+  esac
 done
+# Causa comun cuando algun latido fresco trae 401.
+C401=""
+[ -n "$RZ_401" ] && C401="rqlite rechaza las credenciales de:$RZ_401 (401): desde ahí no se leen ni se apuntan las pasadas de los avisos. Revisar ~/.config/rqlite/sentinel.curlrc en esos nodos."
 
 # --- Maquina de estados: clave estado desde ult_aviso ---------------------
 NUEVO=""
@@ -116,23 +127,25 @@ elif [ $((NOW - ULT)) -gt "$CASA_MAX" ]; then
 else
   evaluar casa ok 0 "" "🟢 $P la casa vuelve a dar señales"
   if [ "$AV" -eq 0 ]; then
-    evaluar avisos mal "$AVISOS_MAX" "🔴 $P los avisos de la red no han registrado ninguna pasada (sentinel_vigia vacía). Mientras tanto nadie avisará de caídas." "🟢 $P los avisos de la red vuelven a correr"
+    evaluar avisos mal "$AVISOS_MAX" "🔴 $P los avisos de la red no han registrado ninguna pasada (sentinel_vigia vacía${C401:+ o ilegible}). Mientras tanto nadie avisará de caídas.${C401:+ Además, $C401}" "🟢 $P los avisos de la red vuelven a correr"
     evaluar telegram - 0 "" ""
   elif [ $((NOW - AV)) -gt "$AVISOS_MAX" ]; then
-    # La causa la decide el readyz del PROPIO Wheel, si es de los que laten: sin
-    # lider (503) o con su rqlited caido (000) no puede apuntar sus pasadas aunque
-    # este vigilando. Si el Wheel no late (un telefono), se dan las dos causas.
+    # La causa la decide el ultimo campo del latido del PROPIO Wheel, si es de los
+    # que laten: sin lider (503), con su rqlited caido (000) o con sus credenciales
+    # rechazadas (401) no puede apuntar sus pasadas aunque este vigilando. Si el
+    # Wheel no late (un telefono), se dan las causas que se vean en los demas.
     RZW=$(printf '%s\n' $RZ_LISTA | sed -n "s/^$AV_W=//p" | head -n 1)
     case "$RZW" in
       200) CAUSA="No está pasando: mirar el cron o el timer de $AV_W. Mientras tanto nadie avisa de caídas."
-           [ -n "$RZ_MAL" ] && CAUSA="$CAUSA (Además, readyz malo en:$RZ_MAL.)" ;;
+           [ -n "$RZ_SL" ] && CAUSA="$CAUSA (Además, readyz malo en:$RZ_SL.)"
+           [ -n "$C401" ] && CAUSA="$CAUSA Además, $C401" ;;
       000) CAUSA="El rqlited de $AV_W no responde (readyz 000): no puede apuntar sus pasadas, aunque puede que siga vigilando." ;;
+      401) CAUSA="rqlite rechaza las credenciales de $AV_W (401): no puede leer ni apuntar sus pasadas, aunque puede que siga vigilando. Revisar ~/.config/rqlite/sentinel.curlrc en $AV_W." ;;
       ?*)  CAUSA="El rqlite de $AV_W no tiene líder (readyz $RZW): no puede apuntar sus pasadas ni se guarda la telemetría, aunque puede que siga vigilando." ;;
-      *)   if [ -n "$RZ_MAL" ]; then
-             CAUSA="Además rqlite no tiene líder visto desde:$RZ_MAL. Sin líder el Wheel no puede apuntar sus pasadas: puede que siga vigilando."
-           else
-             CAUSA="O no está pasando (mirar el cron o el timer de $AV_W) o no consigue escribir en su rqlite. Mientras tanto puede que nadie avise de caídas."
-           fi ;;
+      *)   CAUSA=""
+           [ -n "$RZ_SL" ] && CAUSA="Además rqlite no tiene líder visto desde:$RZ_SL. Sin líder el Wheel no puede apuntar sus pasadas: puede que siga vigilando."
+           [ -n "$C401" ] && CAUSA="${CAUSA:+$CAUSA }Además, $C401"
+           [ -n "$CAUSA" ] || CAUSA="O no está pasando (mirar el cron o el timer de $AV_W) o no consigue escribir en su rqlite. Mientras tanto puede que nadie avise de caídas." ;;
     esac
     evaluar avisos mal 0 "🔴 $P la última pasada registrada de los avisos (Wheel $AV_W) es de las $(hora "$AV"), hace $(dur $((NOW - AV))). $CAUSA" \
                          "🟢 $P los avisos de la red vuelven a correr (Wheel $AV_W)"

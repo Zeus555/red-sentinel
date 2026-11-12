@@ -22,6 +22,13 @@ CONF="$BASE/sentinel.conf"
 [ -r "$CONF" ] || exit 0
 . "$CONF"
 RQ="${RQLITE:-http://127.0.0.1:4001}"
+
+# Credenciales de rqlite: fichero 600 con una linea  user = "usuario:clave".
+# Van por -K, asi no salen en ps. Sin fichero se pregunta sin credenciales, como
+# siempre: un rqlited sin -auth las ignora de todos modos.
+RQLITE_CRED="${RQLITE_CRED:-$HOME/.config/rqlite/sentinel.curlrc}"
+rqcurl(){ if [ -r "$RQLITE_CRED" ]; then curl -K "$RQLITE_CRED" "$@"; else curl "$@"; fi; }
+
 MAX_H="${RESPALDO_MAX_HORAS:-30}"
 STATE="$BASE/respaldo-vigia.state"
 DRY="${DRY:-0}"
@@ -43,10 +50,18 @@ avisar(){ # $1 = texto
 }
 
 AHORA=$(date +%s)
-R=$(curl -s -m 10 -G "$RQ/db/query" --data-urlencode "q=SELECT MAX(ts) FROM sentinel_respaldo" --data-urlencode "level=none" 2>/dev/null)
+# El codigo HTTP va en la ultima linea: un 401 (rqlite rechaza la clave) llega con
+# el cuerpo vacio y sin el no se distinguiria de un rqlited que no contesta.
+R=$(rqcurl -s -m 10 -w '\n%{http_code}' -G "$RQ/db/query" --data-urlencode "q=SELECT MAX(ts) FROM sentinel_respaldo" --data-urlencode "level=none" 2>/dev/null)
+COD=$(printf '%s' "$R" | tail -n 1 | tr -d '\r ')
 ULTIMA=$(printf '%s' "$R" | grep -oE '"values":\[\[[0-9]+' | grep -oE '[0-9]+$')
+REVISAR="Revisar la tarea \"RED Respaldo - rqlite\" en sentinel020."
 
-if [ -z "$ULTIMA" ]; then
+if [ -z "$ULTIMA" ] && [ "$COD" = "401" ]; then
+  # No dice nada del respaldo, que puede estar al dia: falla la clave de este nodo.
+  EST=mal; DET="rqlite rechaza la contraseña de sentinel (401)"
+  REVISAR="Revisar el fichero de credenciales de rqlite en ${NAME:-sentinel014} (RQLITE_CRED); el respaldo en sí puede estar bien."
+elif [ -z "$ULTIMA" ]; then
   EST=mal; DET="no se pudo leer la fecha del ultimo respaldo en rqlite"
 elif [ $(( AHORA - ULTIMA )) -gt $(( MAX_H * 3600 )) ]; then
   EST=mal; DET="el ultimo respaldo es de hace $(( (AHORA - ULTIMA) / 3600 )) h (limite: $MAX_H h)"
@@ -60,7 +75,7 @@ case "${ULT_AVISO:-}" in ''|*[!0-9]*) ULT_AVISO=0 ;; esac
 
 if [ "$EST" = "mal" ]; then
   if [ "$ANT" != "mal" ] || [ $(( AHORA - ULT_AVISO )) -ge 86400 ]; then
-    avisar "🔴 Respaldo rqlite: $DET. Revisar la tarea \"RED Respaldo - rqlite\" en sentinel020. Avisa ${NAME:-sentinel014}."
+    avisar "🔴 Respaldo rqlite: $DET. $REVISAR Avisa ${NAME:-sentinel014}."
     ULT_AVISO=$AHORA
   fi
 elif [ "$ANT" = "mal" ]; then

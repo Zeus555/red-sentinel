@@ -103,7 +103,7 @@ es nodo rqlite**: es el equipo donde se concentran los **RPA Monitor**. Windows 
 Node 23.11.0 en `%USERPROFILE%\node`, Git y Chrome oficial; **sin PM2**. Verificado
 en vivo el 2026-09-22. Ver [Servicio 8](#servicio-8-rpa-monitor-en-sentinel020).
 
-Nota: node-ids NO siguen el orden de los hosts — sentinel002 es node9 (node2 ya lo tenía sentinel003). Al añadir un nodo, usar el siguiente node-id libre, no el número del host. **Comprobar el id libre en vivo** con `curl 'http://<ip>:4001/nodes?pretty'`, no en esta tabla.
+Nota: node-ids NO siguen el orden de los hosts — sentinel002 es node9 (node2 ya lo tenía sentinel003). Al añadir un nodo, usar el siguiente node-id libre, no el número del host. **Comprobar el id libre en vivo** con `curl -K ~/.config/rqlite/sentinel.curlrc 'http://<ip>:4001/nodes?nonvoters&pretty'`, no en esta tabla (sin `?nonvoters` no salen los no votantes).
 
 Otras IPs del ecosistema: `IpWheel=192.168.0.209` (nodo "Wheel" que sirve
 `/useragent` a los Sentinels).
@@ -168,9 +168,10 @@ que el reloj pinte una bandeja unificada consultando dos APIs idénticas.
   - `esquema_bd` → tablas + nº de filas + DDL.
   - `consultar_bd(sql)` → `GET {RQLITE_API}/db/query` con guard SELECT/PRAGMA/WITH
     (rechaza escrituras), fallback `level=weak`→`none`.
-- **GOTCHA**: rqlited escucha en la IP LAN (`-http-addr 192.168.1.252:4001`),
-  **NO en localhost** → `RQLITE_API=http://192.168.0.166:4001` en el `.env`
-  (o el `MyIP` del nodo). localhost:4001 da respuesta vacía.
+- `RQLITE_API=http://192.168.0.166:4001` en el `.env`. Desde el 2026-07-05 rqlited
+  escucha en `0.0.0.0`, así que localhost también valdría (antes no). Con contraseña
+  (2026-11-11), el chatbot pregunta como `lector` con `RQLITE_USER` y `RQLITE_PASSWORD`
+  en el mismo `.env` (ver `rqlite/auth/README.md`).
 - **Memoria (2026-07-06)**: persiste en `chat_state.json` (junto a server.js):
   - **Esquema cacheado** (5 min) inyectado en el system prompt con columnas y
     nº de filas de cada tabla → el bot NO redescubre el esquema cada vez ni
@@ -342,13 +343,15 @@ que el reloj pinte una bandeja unificada consultando dos APIs idénticas.
   - **Quitarle el voto a un nodo** (de uno en uno; 9-15 s y sin elecciones):
     1. Añadir `-raft-non-voter=true` al `run` (respaldo `run.bak-20261030`).
     2. `sv -w 60 down rqlited`
-    3. `curl -XDELETE http://192.168.0.21:4001/remove -d '{"id":"nodeN"}'`
+    3. `curl -K ~/.config/rqlite/admin.curlrc -XDELETE http://192.168.0.21:4001/remove -d '{"id":"nodeN"}'`
+       (desde la laptop, que es donde vive `admin.curlrc`). Antes de arrancar, cambiar
+       también su `auth.json` por el de no votante, o por el de votante si gana el voto.
     4. `sv up rqlited` y comprobar en `/nodes?nonvoters` que sale `voter:false`.
 
     El `/remove` es obligatorio: si el id y la dirección ya están en el clúster, rqlite
     ignora el join y el nodo seguiría votando. **Dar el voto** es lo mismo, quitando el
     flag.
-  - **Mover al líder:** `curl -XPOST http://<ip-del-lider>:4001/leader -d '{"id":"node6"}'`.
+  - **Mover al líder:** `curl -K ~/.config/rqlite/admin.curlrc -XPOST http://<ip-del-lider>:4001/leader -d '{"id":"node6"}'` (desde la laptop).
     Ojo: en el líder surte efecto al instante, no es una consulta.
   - **Pendiente: sentinel017.** Se quitó del clúster estando caído, sin poder cambiar su
     `run`, así que **al volver entrará como votante** y serían 4, con quórum de 3. En
@@ -396,10 +399,11 @@ que el reloj pinte una bandeja unificada consultando dos APIs idénticas.
   `idx_temp_node_ts`/`idx_disk_node_ts`: ahora responde en ~0.1 s y `activo`
   se calcula contra el MAX(ts) de la tabla. Regla: toda consulta que use el
   chatbot debe terminar muy por debajo de 8 s (`AbortSignal.timeout(8000)`).
-- Consultas útiles:
-  - `curl 'http://<ip>:4001/status?pretty'`
-  - `curl 'http://<ip>:4001/nodes?pretty'`
-  - `curl -G '<ip>:4001/db/query' --data-urlencode 'q=SELECT ...' --data-urlencode 'level=none'`
+- Consultas útiles (con contraseña desde el 2026-11-11: `-K ~/.config/rqlite/sentinel.curlrc`,
+  que está en la laptop y en cada nodo y vale contra votantes y no votantes):
+  - `curl -K ~/.config/rqlite/sentinel.curlrc 'http://<ip>:4001/status?pretty'`
+  - `curl -K ~/.config/rqlite/sentinel.curlrc 'http://<ip>:4001/nodes?nonvoters&pretty'`
+  - `curl -K ~/.config/rqlite/sentinel.curlrc -G '<ip>:4001/db/query' --data-urlencode 'q=SELECT ...' --data-urlencode 'level=none'`
     (`level=none` responde aunque no haya quórum)
 
 ## Servicio 3: PRC_Sentinel (`prc_sentinel/`)
@@ -504,7 +508,12 @@ dispositivos. Orden probado:
    las directivas `replace` del go.mod.
 6. **Servicio runit** `$PREFIX/var/service/rqlited/{run,log/run}` con el
    **siguiente node-id libre según `/nodes?nonvoters` en vivo**, bind `0.0.0.0` +
-   adv addr y `-raft-non-voter=true`: un nodo nuevo entra sin voto.
+   adv addr y `-raft-non-voter=true`: un nodo nuevo entra sin voto. Desde el
+   2026-11-11 el `run` lleva también `-auth ... -join-as nodo` (plantilla en
+   `runit_services/rqlited.run.sh`), y **antes de arrancarlo** hay que copiarle
+   `~/.config/rqlite/auth.json` (el de no votante) y `sentinel.curlrc`, los dos en 600:
+   ver [`rqlite/auth/README.md`](../rqlite/auth/README.md). Sin `auth.json` rqlited
+   no arranca, y sin `sentinel.curlrc` sus scripts reciben 401.
 7. **Boot**: `~/.termux/boot/00-services.sh`. Arrancar con
    `. $PREFIX/etc/profile.d/start-services.sh` (con `SVDIR` exportado).
 8. **thermal-guard**: copiar `thermal-guard.sh` + `.conf` desde otro nodo
@@ -928,7 +937,8 @@ verificado: `D:\RPA Monitor Barco\MIGRACION_SENTINEL020.md`.
 
 ## Servicio 9: Respaldo de rqlite (sentinel020 + sentinel014)
 
-Alta 2026-10-30. Cada noche a las 03:45 la tarea `RED Respaldo - rqlite` de sentinel020
+Alta 2026-10-30. Cada noche a las 10:45 UTC (03:45 en horario de verano, 02:45 en invierno:
+el disparador quedó atado a UTC) la tarea `RED Respaldo - rqlite` de sentinel020
 baja una copia de la base, la comprueba y la sube a la EC2. En sentinel014, el timer
 `sentinel-v2-respaldo-vigia` avisa si deja de haber copias recientes. Cómo funciona y
 cómo restaurar: [`rqlite/README.md`](../rqlite/README.md#respaldo-diario).
@@ -937,7 +947,7 @@ cómo restaurar: [`rqlite/README.md`](../rqlite/README.md#respaldo-diario).
   con el bot de Telegram, copiado del `.env` de RPA Monitor Extron).
 - Los avisos fallidos llegan por Telegram una vez por pasada. Si todo va bien, no hay
   mensaje.
-- Comprobar: `curl -G 192.168.0.21:4001/db/query --data-urlencode "q=SELECT * FROM
+- Comprobar: `curl -K ~/.config/rqlite/sentinel.curlrc -G 192.168.0.21:4001/db/query --data-urlencode "q=SELECT * FROM
   sentinel_respaldo ORDER BY ts DESC LIMIT 3"`.
 
 ## Servicio 10: Avisos de la red y latido a la EC2

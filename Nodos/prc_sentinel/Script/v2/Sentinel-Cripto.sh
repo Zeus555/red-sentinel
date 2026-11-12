@@ -27,6 +27,12 @@ PAR="${CRIPTO_PAR:-WBTC-USD}"
 PASO="${CRIPTO_SEGUNDOS:-10}"
 DIAS="${CRIPTO_RETENCION_DIAS:-90}"
 
+# Credenciales de rqlite: fichero 600 con una linea  user = "usuario:clave".
+# Van por -K, asi no salen en ps. Sin fichero se pregunta sin credenciales, como
+# siempre: un rqlited sin -auth las ignora de todos modos.
+RQLITE_CRED="${RQLITE_CRED:-$HOME/.config/rqlite/sentinel.curlrc}"
+rqcurl(){ if [ -r "$RQLITE_CRED" ]; then curl -K "$RQLITE_CRED" "$@"; else curl "$@"; fi; }
+
 # ¿Me toca? Los nodos listados, mas el Wheel (para que nunca falte recolector).
 W=""; [ -r "$BASE/wheel.state" ] && W=$(tr -d '[:space:]' < "$BASE/wheel.state")
 me=0
@@ -44,7 +50,7 @@ if ! mkdir "$LOCK" 2>/dev/null; then
 fi
 trap 'rmdir "$LOCK" 2>/dev/null' EXIT INT TERM HUP
 
-sql(){ curl -s -m 10 -o /dev/null -H "Content-Type: application/json" -d "$1" "$RQ/db/execute"; }
+sql(){ rqcurl -s -m 10 -o /dev/null -H "Content-Type: application/json" -d "$1" "$RQ/db/execute"; }
 
 # edad_ms se guarda a proposito: si alguna muestra llega vieja, queda constancia
 # en el dato en vez de disimularse. nodo dice quien la escribio primero, que es

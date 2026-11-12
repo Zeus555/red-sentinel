@@ -16,6 +16,18 @@ const PORT = process.env.PORT || 8002;
 const GEMINI_KEY = process.env.GEMINI_API_KEY || '';
 const OWNER_NUMBER = (process.env.OWNER_NUMBER || '').replace(/[^0-9]/g, '');
 const RQLITE_API = process.env.RQLITE_API || 'http://localhost:4001';
+// Credenciales de rqlite (usuario lector), del .env: RQLITE_USER y RQLITE_PASSWORD.
+// Con las dos se manda Authorization: Basic en TODAS las peticiones a rqlite (y solo
+// a rqlite). Sin ellas se pregunta sin credenciales, como siempre: un rqlited sin
+// -auth las ignora. La cabecera se arma aqui, en memoria; nunca se imprime.
+const RQLITE_USER = process.env.RQLITE_USER || '';
+const RQLITE_PASSWORD = process.env.RQLITE_PASSWORD || '';
+const RQLITE_HEADERS = (RQLITE_USER && RQLITE_PASSWORD)
+    ? { Authorization: 'Basic ' + Buffer.from(RQLITE_USER + ':' + RQLITE_PASSWORD, 'utf8').toString('base64') }
+    : {};
+if (!!RQLITE_USER !== !!RQLITE_PASSWORD) console.warn('[RQLITE] falta RQLITE_USER o RQLITE_PASSWORD: se pregunta a rqlite sin credenciales');
+// Con -auth, rqlite rechaza con 401 y cuerpo vacio: se reconoce por el codigo, no por el JSON.
+const RQLITE_401 = 'rqlite rechaza las credenciales del chatbot (401)';
 
 // WhatsApp usa "LID" (@lid) para ocultar el numero real del remitente. Aceptamos
 // tanto el numero (@s.whatsapp.net) como el LID. Los LID permitidos vienen de la
@@ -123,7 +135,9 @@ async function rqliteQuery(sql) {
     for (const level of ['weak', 'none']) {
         try {
             const url = `${RQLITE_API}/db/query?level=${level}&q=${encodeURIComponent(s)}`;
-            const r = await fetch(url, { signal: AbortSignal.timeout(8000) });
+            const r = await fetch(url, { headers: RQLITE_HEADERS, signal: AbortSignal.timeout(8000) });
+            // Un 401 no se arregla bajando a level=none: es el mismo usuario.
+            if (r.status === 401) { console.warn('[RQLITE] ' + RQLITE_401); return { error: RQLITE_401 }; }
             const j = await r.json();
             const res = j.results && j.results[0];
             if (res && res.error) { if (level === 'weak') continue; return { error: res.error }; }
@@ -145,7 +159,8 @@ const NODE_MAP = {
 async function toolEstadoRed() {
     // 'nonvoters': sin el, /nodes solo lista los nodos con voto (3 desde el 2026-10-30).
     // El quorum se cuenta solo entre esos, que son los unicos que deciden.
-    const r = await fetch(`${RQLITE_API}/nodes?pretty&nonvoters&timeout=3s`, { signal: AbortSignal.timeout(8000) });
+    const r = await fetch(`${RQLITE_API}/nodes?pretty&nonvoters&timeout=3s`, { headers: RQLITE_HEADERS, signal: AbortSignal.timeout(8000) });
+    if (r.status === 401) { console.warn('[RQLITE] ' + RQLITE_401); return { error: RQLITE_401 }; }
     const j = await r.json();
     const nodos = Object.entries(j).map(([id, v]) => ({
         id, nombre: (NODE_MAP[id] && NODE_MAP[id].n) || id, ip: (NODE_MAP[id] && NODE_MAP[id].ip) || v.addr,

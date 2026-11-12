@@ -38,12 +38,19 @@ inalcanzable. **No simplificar a `-http-addr <IP>:4001`.** El detalle completo
 está en el [README de la flota](../README.md), sección rqlite.
 
 Lo que sí cambia por nodo: `-node-id` y las dos `-adv-addr`. La lista de `-join`
-puede quedarse como está — apunta a tres nodos semilla y basta con que uno
-responda.
+apunta a los otros dos votantes y basta con que uno responda.
+
+**3. `-auth` y `-join-as nodo`** (desde el 2026-11-11). rqlited pide contraseña y
+el nodo hace el join con el usuario `nodo`, cuya clave sale del propio
+`~/.config/rqlite/auth.json`. Ese fichero **no está aquí** (lleva las claves): se
+copia antes de arrancar, con el de votante, como explica
+[`rqlite/auth/README.md`](../../rqlite/auth/README.md). Sin él, rqlited no arranca;
+sin `-join-as`, el join falla y el nodo muere a los ~12 s y entra en bucle.
 
 ## Restaurar
 
 ```bash
+# antes: ~/.config/rqlite/auth.json (fichero de votante) y sentinel.curlrc, en 600
 scp rqlited.service sentinel014:~/.config/systemd/user/
 ssh sentinel014 'systemctl --user daemon-reload && systemctl --user enable --now rqlited'
 ```
@@ -56,7 +63,7 @@ el nodo estaba apagado) y 300 s de dispersión aleatoria.
 Comprobar después:
 
 ```bash
-ssh sentinel014 'systemctl --user list-timers --no-pager; curl -s localhost:4001/status?pretty | head'
+ssh sentinel014 'systemctl --user list-timers --no-pager; curl -s -K ~/.config/rqlite/sentinel.curlrc localhost:4001/status?pretty | head'
 ```
 
 ## Dependencia externa que estas unidades dan por hecha

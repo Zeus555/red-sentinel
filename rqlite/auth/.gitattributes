@@ -1,0 +1,2 @@
+# Estos scripts corren en Git Bash y en Linux: un CRLF rompe el shebang y los case.
+*.sh text eol=lf

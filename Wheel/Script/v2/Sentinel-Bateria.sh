@@ -20,6 +20,12 @@ CONF="$BASE/sentinel.conf"
 command -v termux-battery-status >/dev/null 2>&1 || exit 0
 RQ="${RQLITE:-http://127.0.0.1:4001}"
 
+# Credenciales de rqlite: fichero 600 con una linea  user = "usuario:clave".
+# Van por -K, asi no salen en ps. Sin fichero se pregunta sin credenciales, como
+# siempre: un rqlited sin -auth las ignora de todos modos.
+RQLITE_CRED="${RQLITE_CRED:-$HOME/.config/rqlite/sentinel.curlrc}"
+rqcurl(){ if [ -r "$RQLITE_CRED" ]; then curl -K "$RQLITE_CRED" "$@"; else curl "$@"; fi; }
+
 # --- Nodos moviles: a donde escribir cuando no hay rqlite local -------------
 # En el movil, Sentinel-Roam.sh para rqlited al salir de casa para no replicar
 # Raft sobre datos moviles. Sin esto la telemetria de bateria se perderia justo
@@ -28,8 +34,13 @@ RQ="${RQLITE:-http://127.0.0.1:4001}"
 # Con RQLITE_FALLBACK definido se escribe al lider remoto por la malla (una fila
 # cada 5 min es trafico despreciable). Sin la variable —los nodos fijos— no se
 # comprueba nada y el comportamiento es el de siempre.
+# La sonda solo pregunta "mi rqlite local responde?": cualquier respuesta HTTP
+# vale, 401 incluido (curl sin -f sale con 0). Un 401 es un rqlited vivo que no
+# acepta la clave: el fallback es para cuando rqlited esta parado (Roam), no para
+# tapar una clave mal puesta. El fallback es nuestro rqlite por la malla
+# WireGuard, asi que tambien lleva credenciales y viajan cifradas.
 if [ -n "${RQLITE_FALLBACK:-}" ]; then
-  curl -s -m 4 -o /dev/null "$RQ/status" 2>/dev/null || RQ="$RQLITE_FALLBACK"
+  rqcurl -s -m 4 -o /dev/null "$RQ/status" 2>/dev/null || RQ="$RQLITE_FALLBACK"
 fi
 
 # --- Reparto en el tiempo -------------------------------------------------
@@ -59,7 +70,7 @@ case "${PCT:-}" in ''|*[!0-9]*) exit 0 ;; esac      # sin dato fiable, no se inv
 num(){ case "${1:-}" in ''|*[!-0-9.]*) printf 0 ;; *) printf '%s' "$1" ;; esac; }
 UA=$(num "$UA"); CC=$(num "$CC"); TMP=$(num "$TMP")
 
-sql(){ curl -s -m 10 -o /dev/null -H "Content-Type: application/json" -d "$1" "$RQ/db/execute"; }
+sql(){ rqcurl -s -m 10 -o /dev/null -H "Content-Type: application/json" -d "$1" "$RQ/db/execute"; }
 
 # Tabla propia, creada a la primera. Se deja aparte de sentinel_temp para no
 # tocar la que ya alimenta el panel y el chatbot.

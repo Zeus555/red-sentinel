@@ -60,7 +60,16 @@ log(){ printf '%s %s\n' "$(date '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; }
 en_casa(){
   i=1
   while [ "$i" -le 2 ]; do
-    if curl -s -m 4 -o /dev/null "http://$SEED:4001/status?pretty" 2>/dev/null; then
+    # Curl a pelo, SIN las credenciales de rqlite y a proposito: fuera de casa esa
+    # IP privada puede ser de cualquiera (la red de un hotel) y se le estaria
+    # regalando la clave. Tampoco hacen falta: cualquier respuesta HTTP, 401
+    # incluido (curl sin -f sale con 0), ya significa "estoy en casa".
+    # /readyz y no /status (2026-11-11): con la contraseña cerrada, "*" solo tiene
+    # "ready", y un /status anonimo sumaba un 401 en el auth_fail de sentinel014 cada
+    # 5 min, justo el contador que se vigila para cazar clientes sin clave. ?noleader:
+    # que conteste al momento aunque el cluster este sin lider. -q (el primero) para que
+    # curl no lea ~/.curlrc: asi es literal que nunca lleva credenciales.
+    if curl -q -s -m 4 -o /dev/null "http://$SEED:4001/readyz?noleader" 2>/dev/null; then
       return 0
     fi
     i=$((i + 1))

@@ -47,18 +47,20 @@ debe terminar muy por debajo de 8 s.
 
 ## Aplicar
 
+Desde el 2026-11-11 rqlite pide contraseña. Todo lo que se haga a mano va desde la
+laptop, con `-K ~/.config/rqlite/admin.curlrc`, y contra un votante (014, 016 o 005).
+Ver [Operaciones a mano con la puerta cerrada](auth/README.md#operaciones-a-mano-con-la-puerta-cerrada).
+Sentencia a sentencia contra la API:
+
 ```bash
-rqlite -H 192.168.0.21 -p 4001 < esquema.sql
+curl -K ~/.config/rqlite/admin.curlrc -XPOST 'http://192.168.0.21:4001/db/execute' -H 'Content-Type: application/json' -d '["CREATE TABLE ..."]'
 ```
 
-O sentencia a sentencia contra la API:
+El shell `rqlite -H 192.168.0.21 -p 4001 < esquema.sql` ya no vale tal cual. Solo acepta la
+clave con `-u usuario:clave`, y así queda a la vista en la lista de procesos.
 
-```bash
-curl -XPOST '192.168.0.21:4001/db/execute' -H 'Content-Type: application/json' -d '["CREATE TABLE ..."]'
-```
-
-Ojo: `rqlited` escucha en la IP LAN, **no en localhost**. `localhost:4001`
-devuelve respuesta vacía. Usar siempre la IP del nodo.
+`rqlited` escucha en `0.0.0.0` desde el 2026-07-05, así que `localhost:4001` funciona en el
+propio nodo. Desde otro equipo, usar la IP del nodo.
 
 ## Lo que esto NO es
 
@@ -74,7 +76,7 @@ la guarda fuera del clúster. Código en [`respaldo/`](respaldo).
 
 | Pieza | Dónde | Qué hace |
 |---|---|---|
-| Tarea `RED Respaldo - rqlite` | sentinel020, 03:45 | Lanza `Sentinel-Respaldo.sh`. Si el equipo estaba apagado, sale al volver |
+| Tarea `RED Respaldo - rqlite` | sentinel020, 10:45 UTC (03:45 en verano, 02:45 en invierno) | Lanza `Sentinel-Respaldo.sh`. Si el equipo estaba apagado, sale al volver |
 | Copias | `D:\RED Respaldo\rqlite\` | Se conservan 14 diarias, 8 semanales y 12 mensuales |
 | Copia externa | `batchtoday:~/respaldos/rqlite/` | 3 diarias, 2 semanales y 1 mensual, porque la EC2 solo tiene 8,7 GB |
 | Vigía | sentinel014, timer cada 6 h | Avisa si la última copia tiene más de 30 h, por si la tarea ni llega a correr |
@@ -106,7 +108,7 @@ todos los nodos por WiFi: es el último recurso.
 
 ```bash
 gzip -dc rqlite-AAAAMMDD-HHMM.sqlite.gz > copia.sqlite
-curl -XPOST 'http://192.168.0.21:4001/db/load' -H 'Content-Type: application/octet-stream' -T copia.sqlite
+curl -K ~/.config/rqlite/admin.curlrc -XPOST 'http://192.168.0.21:4001/db/load' -H 'Content-Type: application/octet-stream' -T copia.sqlite
 ```
 
 **Ensayar sin riesgo.** Un rqlited suelto, sin `-join` y en loopback, no puede tocar
@@ -123,5 +125,13 @@ Copiar `Sentinel-Respaldo.sh`, `respaldo-verifica.js` y `respaldo.cmd` a
 [`.env.example`](respaldo/.env.example) y ejecutar `registrar-tarea.ps1`. El vigía va
 en `~/PRC_Sentinel/v2/` y sus unidades en `~/.config/systemd/user/`.
 
-Cuando rqlite lleve `-auth`, el `INSERT` del script y la lectura del vigía necesitarán
-credenciales.
+Para cuando rqlite lleve `-auth`, los dos ya mandan credenciales si encuentran su fichero
+(sin él, preguntan como siempre): el script con `RQ_CRED` (por defecto
+`D:\RED Respaldo\rqlite-respaldo.curlrc`, usuario `respaldo`) y el vigía con `RQLITE_CRED`
+(por defecto `~/.config/rqlite/sentinel.curlrc`, usuario `sentinel`).
+
+## Contraseña (`-auth`)
+
+Usuarios y permisos, dónde vive cada fichero de credenciales, cómo se generan y reparten, y
+el procedimiento para activar `-auth` en dos rondas (y lo que la contraseña no cierra): ver
+[`auth/README.md`](auth/README.md).

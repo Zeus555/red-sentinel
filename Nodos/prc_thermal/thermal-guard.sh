@@ -18,6 +18,12 @@ CONF="$HOME/PRC_Thermal/thermal-guard.conf"
 : "${MINGAP:=900}"   # segundos mínimos entre alertas del mismo nivel
 : "${RQLITE:=http://localhost:4001}"
 
+# Credenciales de rqlite: fichero 600 con una linea  user = "usuario:clave".
+# Van por -K, asi no salen en ps. Sin fichero se pregunta sin credenciales, como
+# siempre: un rqlited sin -auth las ignora de todos modos.
+RQLITE_CRED="${RQLITE_CRED:-$HOME/.config/rqlite/sentinel.curlrc}"
+rqcurl(){ if [ -r "$RQLITE_CRED" ]; then curl -K "$RQLITE_CRED" "$@"; else curl "$@"; fi; }
+
 STATE="$HOME/PRC_Thermal"
 HOLD="$STATE/.thermal_hold"
 LAST="$STATE/.last_alert"        # rate-limit de temperatura
@@ -70,7 +76,7 @@ if [ -n "$raw" ]; then
     else                                LVL=OK
     fi
 
-    curl -s --max-time 8 -H "Content-Type: application/json" \
+    rqcurl -s --max-time 8 -H "Content-Type: application/json" \
         -d "[[\"INSERT INTO sentinel_temp(node,ts,temp_c,source,level,raft_node_id) VALUES(?,?,?,?,?,?)\",\"$NAME\",$now,$raw,\"$SRC\",\"$LVL\",\"$RAFT_ID\"]]" \
         "$RQLITE/db/execute" >/dev/null 2>&1
 
@@ -115,7 +121,7 @@ if [ -n "$sdp" ] && [ -d "$sdp" ]; then
 fi
 
 if [ -n "$INT" ]; then
-    curl -s --max-time 8 -H "Content-Type: application/json" \
+    rqcurl -s --max-time 8 -H "Content-Type: application/json" \
         -d "[[\"INSERT INTO sentinel_disk(node,raft_node_id,ts,int_total_kb,int_free_kb,sd_total_kb,sd_free_kb) VALUES(?,?,?,?,?,?,?)\",\"$NAME\",\"$RAFT_ID\",$now,${INT% *},${INT#* },$SD_TOTAL,$SD_FREE]]" \
         "$RQLITE/db/execute" >/dev/null 2>&1
 

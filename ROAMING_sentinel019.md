@@ -450,8 +450,8 @@ curl -s -m 6 "http://10.9.0.19:8181/version?token=$(cat ~/PRC_Sentinel/v2/fleet.
 | `/version` desde la laptop | responde `Sentinel ... 2.0.0` |
 | `/version` **sin** token | `401` |
 | `ssh sentinel019` | entra |
-| desde el móvil: `curl 192.168.0.21:4001/status` | **falla** — y debe fallar: es lo que le dice a `Sentinel-Roam.sh` que está fuera |
-| desde el móvil: `curl 10.9.0.14:4001/status` | responde — es la vía de la telemetría |
+| desde el móvil: `curl -s -m 4 -o /dev/null -w '%{http_code}' 'http://192.168.0.21:4001/readyz?noleader'` | **`000`**: no hay conexión, y debe fallar, porque es lo que le dice a `Sentinel-Roam.sh` que está fuera. Es la misma petición que hace Roam, sin clave a propósito; en casa da `200` y no suma `auth_fail` |
+| desde el móvil: `curl -K ~/.config/rqlite/sentinel.curlrc 10.9.0.14:4001/status` | responde — es la vía de la telemetría. Para probar solo que llega, sin clave: `/readyz?noleader` |
 | `sv status rqlited` en el móvil | `down` — lo paró `Sentinel-Roam.sh` |
 | `cat ~/PRC_Sentinel/v2/roam.state` | `fuera\|fuera\|N` |
 | `sentinel_bateria` en rqlite | sigue recibiendo filas de `sentinel019` |

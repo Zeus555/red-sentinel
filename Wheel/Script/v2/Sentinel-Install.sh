@@ -182,6 +182,14 @@ echo "== Resumen =="
 echo "  El v1 NO se ha tocado: sigue en ~/PRC_Sentinel/ y su crontab sigue comentado."
 echo "  El servicio queda DEFINIDO PERO PARADO. Arrancarlo es un paso aparte."
 echo "  Siguiente: copiar ca.pem + <nodo>.pem/.key a $BASE/Certs y lanzar Sentinel-TLS.sh"
+# rqlite pide contrasena desde el 2026-11-11. Sin este fichero los scripts preguntan
+# sin clave y reciben 401 en silencio (ver rqlite/auth/README.md).
+if [ ! -r "$HOME/.config/rqlite/sentinel.curlrc" ]; then
+  echo
+  echo "  AVISO: falta ~/.config/rqlite/sentinel.curlrc. Sin el, Alert, Bateria,"
+  echo "  thermal-guard y los colectores reciben 401 de rqlite. Copialo (chmod 600) desde"
+  echo "  la laptop como dice rqlite/auth/README.md, junto con auth.json si el nodo es de rqlite."
+fi
 if [ -n "$TRABAJOS" ]; then
   echo
   echo "  Los colectores estan copiados pero SIN cron. Si este nodo debe recolectar,"

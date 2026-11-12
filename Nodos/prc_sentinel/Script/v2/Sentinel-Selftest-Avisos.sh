@@ -6,6 +6,10 @@
 # mensaje) y un `sleep` que no espera. El reloj se fija con SENTINEL_NOW, asi que
 # se pueden simular dias en segundos.
 #
+# Credenciales de rqlite (Fase 0): el curl falso entiende -K <fichero> y apunta
+# cada llamada en argv.log; con $M/rq_clave se porta como un rqlited con -auth
+# (401 con cuerpo vacio si el fichero no trae esa linea; /readyz queda abierto).
+#
 # Uso:  sh Sentinel-Selftest-Avisos.sh        (desde Wheel/Script/v2 o su espejo)
 # Sale con 0 si todo pasa. Prueba los scripts con dash si esta instalado, que es
 # el sh de Ubuntu y de Termux: lo que pase con bash podria no pasar alli.
@@ -21,20 +25,26 @@ si(){ if eval "$2"; then ok "$1"; else no "$1"; fi; }
 
 M="$T/mundo"; B="$T/base"; H="$T/home"; BIN="$T/bin"
 mkdir -p "$M" "$B" "$H/PRC_Thermal" "$BIN"
+ARGV_TODO="$T/argv.todo"; export ARGV_TODO; : > "$ARGV_TODO"
 printf 'BOT_TOKEN="x"\nCHAT_ID="1"\n' > "$H/PRC_Thermal/thermal-guard.conf"
 printf '%s\n' "0123456789abcdef0123456789abcdef0123" > "$B/fleet.token"
 
 # ---------------------------------------------------------------- curl falso
 cat > "$BIN/curl" <<'EOF'
 #!/bin/sh
-M="$MUNDO"; url=""; w=""; o=""; q=""; text=""; data=""; cfg=""
+M="$MUNDO"; url=""; w=""; o=""; q=""; text=""; data=""; cfg=""; kf=""
+# Cada llamada, en una linea de argv.log: para ver a quien se mandan credenciales
+# y que la clave nunca va en la linea de comandos. ARGV_TODO guarda las de todo el
+# banco (argv.log se borra con cada mundo nuevo).
+{ printf '%s' "$*" | tr '\n' ' '; printf '\n'; } >> "$M/argv.log"
+[ -n "${ARGV_TODO:-}" ] && { printf '%s' "$*" | tr '\n' ' '; printf '\n'; } >> "$ARGV_TODO"
 while [ $# -gt 0 ]; do
   case "$1" in
     -m|--connect-timeout|-H) shift ;;
     -w) shift; w="$1" ;;
     -o) shift; o="$1" ;;
     -d) shift; data="$1" ;;
-    -K) shift; [ "$1" = "-" ] && cfg=$(cat) ;;
+    -K) shift; if [ "$1" = "-" ]; then cfg=$(cat); else kf="$1"; fi ;;
     --data-urlencode) shift; case "$1" in q=*) q="${1#q=}" ;; text=*) text="${1#text=}" ;; esac ;;
     -s|-G|-XPOST|-k) ;;
     -*) ;;
@@ -42,6 +52,24 @@ while [ $# -gt 0 ]; do
   esac
   shift
 done
+# El codigo HTTP con el formato que pida -w, como el curl de verdad (que lo
+# escribe aunque no conecte: 000).
+codigo(){
+  case "$w" in
+    *'HTTP:%{http_code}'*) printf '\nHTTP:%s' "$1" ;;
+    *'\n%{http_code}'*) printf '\n%s' "$1" ;;
+    *'%{http_code}'*) printf '%s' "$1" ;;
+  esac
+}
+# rqlite con -auth: si existe $M/rq_clave (la linea que espera, p. ej.
+# user = "sentinel:buena"), los endpoints con permiso responden 401 con cuerpo
+# vacio salvo que -K apunte a un fichero con exactamente esa linea. /readyz queda
+# abierto (usuario "*"), salvo que exista $M/readyz401.
+autoriza(){
+  [ -f "$M/rq_clave" ] || return 0
+  [ -n "$kf" ] && [ -f "$kf" ] && grep -qxF -- "$(cat "$M/rq_clave")" "$kf" && return 0
+  codigo 401; exit 0
+}
 # Como el curl de verdad, la URL puede llegar en un fichero de configuracion (-K -).
 # Si la de Telegram llega en argv, el token del bot se veria en `ps`: se apunta.
 case "$url" in https://api.telegram.org/*) echo "token mal pasado (en argv)" >> "$M/telegram.log" ;; esac
@@ -54,23 +82,32 @@ case "$url" in
     falla=$(cat "$M/tg_falla_si" 2>/dev/null)
     if [ -n "$falla" ] && printf '%s' "$text" | grep -q -- "$falla"; then printf '{"ok":false}\n500'; exit 0; fi
     printf '{"ok":true}\n200'; exit 0 ;;
-  */readyz) c=$(cat "$M/readyz" 2>/dev/null || echo 200); printf '%s' "$c"; exit 0 ;;
+  */readyz) c=$(cat "$M/readyz" 2>/dev/null || echo 200); [ -f "$M/readyz401" ] && c=401; codigo "$c"; exit 0 ;;
+  */status*) autoriza; printf '{"store":{}}'; codigo 200; exit 0 ;;
   */nodes\?*)
-    [ -f "$M/nodes.json" ] || exit 7
+    [ -f "$M/nodes.json" ] || { codigo 000; exit 7; }
     # Sin ?timeout=, un nodo atascado deja /nodes colgado >30 s (21/08) y curl corta:
     # el banco lo imita para que quitar el parametro rompa las pruebas.
-    case "$url" in *timeout=*) ;; *) exit 28 ;; esac
+    case "$url" in *timeout=*) ;; *) codigo 000; exit 28 ;; esac
+    autoriza
     # Sin ?nonvoters, rqlite solo da los votantes: el banco lo imita para que quitar
-    # el parametro rompa las pruebas.
-    case "$url" in *nonvoters*) cat "$M/nodes.json" ;; *) sed 's/{"id":"n-[0-9.]*"[^}]*"voter":false[^}]*},\{0,1\}//g' "$M/nodes.json" ;; esac
-    exit 0 ;;
-  */db/execute) printf '%s\n' "$data" >> "$M/execute.log"; printf '{"results":[{}]}'; exit 0 ;;
+    # el parametro rompa las pruebas. Se quitan del mapa las entradas con
+    # "voter":false: primero las que van detras de una coma y luego, si queda, la
+    # primera (con su coma), sin dejar el JSON roto.
+    case "$url" in
+      *nonvoters*) cat "$M/nodes.json" ;;
+      *) sed -e 's/,[ ]*"[^"]*"[ ]*:[ ]*{[^}]*"voter"[ ]*:[ ]*false[ ]*}//g' \
+             -e 's/^{[ ]*"[^"]*"[ ]*:[ ]*{[^}]*"voter"[ ]*:[ ]*false[ ]*}[ ]*,\{0,1\}[ ]*/{/' "$M/nodes.json" ;;
+    esac
+    codigo 200; exit 0 ;;
+  */db/execute) autoriza; printf '%s\n' "$data" >> "$M/execute.log"; printf '{"results":[{}]}'; codigo 200; exit 0 ;;
   */db/query)
+    autoriza
     case "$q" in
-      *"FROM sentinel_vigia"*) if [ -f "$M/vigia" ]; then printf '{"results":[{"columns":["ts","wheel","pendientes"],"values":[[%s]]}]}' "$(cat "$M/vigia")"; else printf '{"results":[{"columns":["ts","wheel","pendientes"]}]}'; fi; exit 0 ;;
-      *"sentinel_bateria b JOIN"*) [ -f "$M/bat.json" ] && cat "$M/bat.json" || printf '{"results":[{"columns":["a"]}]}'; exit 0 ;;
+      *"FROM sentinel_vigia"*) if [ -f "$M/vigia" ]; then printf '{"results":[{"columns":["ts","wheel","pendientes"],"values":[[%s]]}]}' "$(cat "$M/vigia")"; else printf '{"results":[{"columns":["ts","wheel","pendientes"]}]}'; fi; codigo 200; exit 0 ;;
+      *"sentinel_bateria b JOIN"*) [ -f "$M/bat.json" ] && cat "$M/bat.json" || printf '{"results":[{"columns":["a"]}]}'; codigo 200; exit 0 ;;
       *"FROM sentinel_temp WHERE node=n"*)
-        [ -f "$M/datos.caido" ] && exit 7
+        [ -f "$M/datos.caido" ] && { codigo 000; exit 7; }
         printf '{"results":[{"columns":["n","t","b"],"values":['
         sep=""
         for n in $(printf '%s' "$q" | grep -oE "SELECT '[^']*' AS n" | sed "s/SELECT '//; s/' AS n//"); do
@@ -78,9 +115,9 @@ case "$url" in
           t=$(printf '%s' "$l" | cut -d, -f2); b=$(printf '%s' "$l" | cut -d, -f3)
           printf '%s["%s",%s,%s]' "$sep" "$n" "${t:-null}" "${b:-null}"; sep=","
         done
-        printf ']}]}'; exit 0 ;;
+        printf ']}]}'; codigo 200; exit 0 ;;
     esac
-    printf '{"results":[{"error":"no esperado"}]}'; exit 0 ;;
+    printf '{"results":[{"error":"no esperado"}]}'; codigo 200; exit 0 ;;
   telnet://*) hp=${url#telnet://}
     if [ -f "$M/tcp.$hp" ]; then printf '0.001234'; exit 28; else printf '0.000000'; exit 28; fi ;;
   http://*:8181/fitness*|http://*:8181/version*)
@@ -113,21 +150,25 @@ fitness(){
     "$2" "${6:-1}" "${5:-0}" "${4:-700000}" "${7:-0}" "${3:-0}" > "$M/nodo.$1"
 }
 caer(){ rm -f "$M/nodo.$1"; }
-# nodos_json "ip:reachable:voter ..."  Con el formato de rqlite v10: un nodo
-# inalcanzable NO trae api_addr (rqlite solo lo sabe si el nodo contesta) y si un
-# "error". Con $M/nodes.espacios, ademas, espacio tras los dos puntos.
+# nodos_json "ip:reachable:voter ..."  Con el formato REAL de rqlite v10: un MAPA
+# por id (no {"nodes":[...]}), con las claves en orden alfabetico, p. ej.
+#   {"node1":{"addr":"192.168.0.231:4002","api_addr":"http://192.168.0.231:4001",
+#    "id":"node1","leader":false,"reachable":true,"time":0.0012,"time_s":"1.2ms",
+#    "version":"10","voter":false}, ...}
+# Un nodo inalcanzable NO trae api_addr (rqlite solo lo sabe si el nodo contesta)
+# y si un "error". Con $M/nodes.espacios, ademas, espacio tras los dos puntos.
 nodos_json(){
-  printf '{"nodes":[' > "$M/nodes.json"; sep=""
+  printf '{' > "$M/nodes.json"; sep=""; i=0
   for e in "$@"; do
-    ip=${e%%:*}; r=${e#*:}; v=${r#*:}; r=${r%%:*}
+    ip=${e%%:*}; r=${e#*:}; v=${r#*:}; r=${r%%:*}; i=$((i + 1))
     if [ "$r" = true ]; then
-      printf '%s{"id":"n-%s","api_addr":"http://%s:4001","addr":"%s:4002","voter":%s,"reachable":true,"leader":false,"time":0.0012}' "$sep" "$ip" "$ip" "$ip" "$v" >> "$M/nodes.json"
+      printf '%s"node%s":{"addr":"%s:4002","api_addr":"http://%s:4001","id":"node%s","leader":false,"reachable":true,"time":0.0012,"time_s":"1.2ms","version":"10","voter":%s}' "$sep" "$i" "$ip" "$ip" "$i" "$v" >> "$M/nodes.json"
     else
-      printf '%s{"id":"n-%s","addr":"%s:4002","voter":%s,"reachable":false,"leader":false,"error":"dial tcp %s:4002: i/o timeout"}' "$sep" "$ip" "$ip" "$v" "$ip" >> "$M/nodes.json"
+      printf '%s"node%s":{"addr":"%s:4002","error":"dial tcp %s:4002: i/o timeout","id":"node%s","leader":false,"reachable":false,"time":0,"time_s":"0s","version":"","voter":%s}' "$sep" "$i" "$ip" "$ip" "$i" "$v" >> "$M/nodes.json"
     fi
     sep=","
   done
-  printf ']}' >> "$M/nodes.json"
+  printf '}' >> "$M/nodes.json"
   [ -f "$M/nodes.espacios" ] && sed -i 's/":/": /g' "$M/nodes.json"
   return 0
 }
@@ -493,7 +534,7 @@ echo "== Eleccion: quorum y puntuacion"
 elegir(){ # $1=self; usa el mundo actual; deja la salida en $EL
   EL=$( cd "$T" && PATH="$BIN:$PATH" MUNDO="$M" gawk -v self="$1" -v port=8181 -v token=t \
         -v peers="$T/peers.tsv" -v state="$T/ws" -v rqlite="${2-http://127.0.0.1:4001}" -v debug=1 \
-        -f "$V2/Sentinel-Wheel.awk" 2>&1 )
+        -v rqcred="${RQCRED_E:-}" -f "$V2/Sentinel-Wheel.awk" 2>&1 )
 }
 rm -f "$M"/nodo.* "$T/ws" "$T/ws.miss" "$T/ws.ip" "$T/peers.tsv"; : > "$T/peers.tsv"
 L=""; for i in 1 2 3 4 5 6 7 8 9 10 11; do L="$L 10.1.0.$i:true:false"; done; nodos_json $L
@@ -554,6 +595,116 @@ elegir nodo01
 si "E6 al contestar por mi IP de LAN se recuerda (ws.self)" '[ "$(cat "$T/ws.self" 2>/dev/null)" = 10.1.0.1 ]'
 rm -f "$M/nodo.10.1.0.1" "$T/ws" "$T/ws.miss"; elegir nodo01
 si "E6 si luego solo contesto por 127.0.0.1, cuento 6 de 11 (no de 12) y decido" 'printf "%s" "$EL" | grep -q "veo 6 nodos distintos de 11" && printf "%s" "$EL" | grep -q "Wheel: (ninguno) -> "'
+
+# ---------------------------------------------------------------- credenciales
+# Fase 0 de la contrasena de rqlite. El fichero de credenciales va en la ruta por
+# defecto ($HOME/.config/rqlite/sentinel.curlrc, con HOME=$H). "exige" pone el
+# rqlite falso en modo -auth: sin -K a un fichero con esa linea, 401 y cuerpo
+# vacio (salvo /readyz, abierto). Claves inventadas, solo para el banco.
+echo "== Credenciales de rqlite"
+CRED="$H/.config/rqlite/sentinel.curlrc"
+CB="PruebaBuena0123456789abcdefghijk"; CV="PruebaVieja0123456789abcdefghijk"
+clave(){ mkdir -p "$H/.config/rqlite"; printf 'user = "sentinel:%s"\n' "$1" > "$CRED"; chmod 600 "$CRED"; }
+exige(){ printf 'user = "sentinel:%s"\n' "$1" > "$M/rq_clave"; }
+sin_cred(){ rm -f "$CRED"; }
+a_rqlite(){ grep ':4001' "$M/argv.log"; }      # las peticiones a rqlite
+con_k(){ grep -F -- "-K $CRED " ; }            # las que llevan el fichero
+
+mundo_sano; clave "$CB"; exige "$CB"; ronda; avanza; caer 10.0.0.3; : > "$M/argv.log"; ronda
+si "K1 con fichero: cada peticion a rqlite lleva -K con su ruta" '[ "$(a_rqlite | wc -l)" -ge 5 ] && [ "$(a_rqlite | con_k | wc -l)" = "$(a_rqlite | wc -l)" ]'
+si "K1 y las de Telegram y /fitness no" 'hay "sentinelB (10.0.0.3)" && grep -q ":8181/fitness" "$M/argv.log" && grep "chat_id=" "$M/argv.log" | grep -q -- "-K -" && ! grep -F -- "$CRED" "$M/argv.log" | grep -qv ":4001"'
+si "K1 rqlite acepta la clave: latido apuntado y credenciales en orden" 'grep -q "\"avisos\", $NOW, \"sentinelW\", 0" "$M/execute.log" && [ "$(estado au:sentinelW)" = ok ] && ! grep -q "latido FALLO" "$B/alert.log"'
+si "K2 la clave no sale en argv ni en los registros" '! grep -qs -e "$CB" "$M/argv.log" "$M/telegram.log" "$B/alert.log" "$B/alert.state" "$M/execute.log"'
+
+mundo_sano; sin_cred; ronda; avanza; caer 10.0.0.3; : > "$M/argv.log"; ronda
+si "K3 sin fichero: nada lleva -K a un fichero y todo funciona como siempre" 'hay "sentinelB (10.0.0.3)" && [ "$(a_rqlite | wc -l)" -ge 5 ] && ! grep -qE -- "-K [^-]" "$M/argv.log"'
+
+mundo_sano; clave "$CV"; ronda; avanza; exige "$CB"; ronda
+si "K4 401 en /nodes y /db/query: avisa de la contrasena del Wheel" 'hay "rqlite rechaza la contraseña de:" && hay "sentinelW: rqlite rechaza sus credenciales (401 en /nodes, /db/query)" && hay "sentinel.curlrc"'
+si "K4 y no lo confunde con 'sin lider' ni con 'datos no llegan'" '! hay "sin líder" && ! hay "datos no llegan" && ! hay "la base no recibe"'
+si "K4 el latido rechazado queda en alert.log" 'grep -q "latido FALLO http=401" "$B/alert.log"'
+for i in 1 2 3 4; do avanza; ronda; done
+si "K4 varias pasadas igual: un solo aviso, y ninguno de lider, datos, base ni caidas" '[ "$(grep -c "au_mal ok" "$B/alert.log")" = 1 ] && ! grep -q "cl_mal\|dt_mal\|df_mal\|caido" "$B/alert.log"'
+avanza; clave "$CB"; datos_frescos; ronda
+si "K5 al arreglar la clave: aviso de vuelta" 'hay "rqlite vuelve a aceptar la contraseña de:" && hay "sentinelW tras 25 min" && [ "$(estado au:sentinelW)" = ok ]'
+avanza; datos_frescos; ronda
+si "K5 una sola vez" 'nada'
+
+mundo_sano; sin_cred; ronda; avanza; touch "$M/readyz401"; ronda
+si "K4b /readyz con 401: lo cuenta la contrasena" 'hay "sentinelW: rqlite rechaza sus credenciales (401 en /readyz)"'
+avanza; ronda; avanza; ronda
+si "K4b y no es 'sin lider': __cl__ no se observa y conserva su estado" '! grep -q "cl_mal" "$B/alert.log" && [ "$(estado __cl__)" = ok ]'
+
+mundo_sano; ronda; CONG=$NOW
+for i in 1 2 3 4; do avanza; datos "$CONG" "$((CONG-200))" "$((CONG-100))"; ronda; done
+si "K6 base sin datos nuevos con mi rqlite sano: dentro de la gracia, silencio" '! grep -qs "df_mal" "$B/alert.log"'
+avanza; datos "$CONG" "$((CONG-200))" "$((CONG-100))"; ronda
+si "K6 pasada la gracia avisa de la base, con la edad del ultimo dato" 'hay "la base no recibe datos nuevos de ningún nodo" && hay "última temperatura hace 25 min; última batería hace 26 min" && hay "réplica de sentinelW"'
+avanza; datos "$CONG" "$((CONG-200))" "$((CONG-100))"; ronda
+si "K6 una sola vez, y sin culpar a cada nodo (D2)" 'nada && [ "$(grep -c "df_mal ok" "$B/alert.log")" = 1 ] && ! grep -q "datos no llegan" "$B/alert.log"'
+avanza; datos_frescos; ronda
+si "K6 cuando llegan, la base vuelve (y no 'vuelven los datos de' cada nodo)" 'hay "la base vuelve a recibir datos" && ! hay "vuelven a llegar los datos de"'
+avanza; datos_frescos; ronda
+si "K6 y la vuelta no se repite" 'nada'
+mundo_sano; ronda; : > "$M/datos"; for i in 1 2 3; do avanza; ronda; done
+si "K6c tablas vacias con nodos que si escribian: 'nunca'" 'hay "última temperatura nunca; última batería nunca"'
+mundo_sano; : > "$M/datos"; for i in 1 2 3 4; do ronda; avanza; done
+si "K6d nadie escribio nunca (sin claves dt:): no se opina de la base" '! grep -qs "df_mal" "$B/alert.log" && [ -z "$(estado df:flota)" ]'
+
+mundo_sano; conf "LATIDO_DESTINO=ubuntu@ec2.test
+LATIDO_LLAVE=$H/llave"; : > "$H/llave"; printf '%s,"sentinelW",0' "$NOW" > "$M/vigia"
+clave "$CB"; exige "$CB"; latir
+si "K7 latido con la clave buena: pregunta con -K y manda 200" '[ "$(cat "$M/ssh.entrada")" = "sentinelW $NOW sentinelW 0 200" ] && [ "$(a_rqlite | wc -l)" = 2 ] && [ "$(a_rqlite | con_k | wc -l)" = 2 ]'
+clave "$CV"; latir
+si "K7 consulta rechazada (401) con /readyz abierto: el quinto campo es 401" '[ "$(cat "$M/ssh.entrada")" = "sentinelW 0 - 0 401" ]'
+sin_cred; rm -f "$M/rq_clave"; : > "$M/argv.log"; latir
+si "K7 sin fichero: el latido pregunta sin -K, como siempre" '[ "$(cat "$M/ssh.entrada")" = "sentinelW $NOW sentinelW 0 200" ] && ! grep -qE -- "-K [^-]" "$M/argv.log"'
+
+rm -f "$E"/*.latido "$E/vigilar.state"
+latido sentinel014 $((NOW-10)) $((NOW-60)) sentinel016; latido sentinel016 $((NOW-20)) $((NOW-60)) sentinel016; vigilar
+avanza; latido sentinel014 $((NOW-10)) $((NOW-3000)) sentinel016 0 200; latido sentinel016 $((NOW-20)) 0 - 0 401; vigilar
+si "K8 el Wheel late con 401 y su pasada es vieja: credenciales, no 'sin lider' ni el cron" 'hay "rqlite rechaza las credenciales de sentinel016 (401)" && hay "Revisar ~/.config/rqlite/sentinel.curlrc en sentinel016" && ! hay "líder" && ! hay "mirar el cron"'
+avanza; latido sentinel014 $((NOW-10)) $((NOW-60)) sentinel016; latido sentinel016 $((NOW-20)) $((NOW-60)) sentinel016; vigilar
+avanza; latido sentinel014 $((NOW-10)) $((NOW-3000)) sentinel014 0 200; latido sentinel016 $((NOW-20)) 0 - 0 401; vigilar
+si "K8b otro nodo con 401: se nombra como credenciales, no como readyz" 'hay "mirar el cron o el timer de sentinel014" && hay "Además, rqlite rechaza las credenciales de: sentinel016 (401)" && ! hay "readyz malo" && ! hay "readyz 401"'
+rm -f "$E/vigilar.state"
+avanza; latido sentinel014 $((NOW-10)) 0 - 0 401; latido sentinel016 $((NOW-20)) 0 - 0 401; vigilar
+avanza 2400; latido sentinel014 $((NOW-10)) 0 - 0 401; latido sentinel016 $((NOW-20)) 0 - 0 401; vigilar
+si "K8c ninguna pasada legible y 401 en los latidos: lo dice" 'hay "sentinel_vigia vacía o ilegible" && hay "rqlite rechaza las credenciales de: sentinel014 sentinel016 (401)" && ! hay "líder"'
+
+# Eleccion: credenciales por RUTA (-v rqcred, -K en el curl de /nodes) y 401.
+rm -f "$M"/nodo.* "$M/argv.log" "$M/rq_clave" "$T/ws" "$T/ws.miss" "$T/ws.ip" "$T/ws.self"; : > "$T/peers.tsv"
+L=""; for i in 1 2 3 4 5 6 7 8 9 10 11; do L="$L 10.1.0.$i:true:false"; done; nodos_json $L
+fitness 10.1.0.1 nodo01; cp "$M/nodo.10.1.0.1" "$M/nodo.127.0.0.1"
+for i in 2 3 4 5 6; do fitness 10.1.0.$i nodo0$i; done
+clave "$CB"; exige "$CB"; RQCRED_E="$CRED" elegir nodo01
+si "K9 con rqcred el /nodes de la eleccion lleva -K (y el /fitness no)" 'grep "/nodes?" "$M/argv.log" | grep -qF -- "-K $CRED " && ! grep ":8181/fitness" "$M/argv.log" | grep -qF -- "$CRED"'
+si "K9 la linea HTTP: no se cuela en las IP: 11 candidatos y decide" 'printf "%s" "$EL" | grep -q "rqlite aporto 11 candidatos" && printf "%s" "$EL" | grep -q "Wheel: (ninguno) -> "'
+rm -f "$M/rq_clave" "$T/ws" "$T/ws.miss" "$T/ws.self"; : > "$M/argv.log"; RQCRED_E="" elegir nodo01
+si "K9 sin rqcred, sin -K" 'grep -q "/nodes?" "$M/argv.log" && ! grep -qE -- "-K [^-]" "$M/argv.log"'
+# elect.sh de verdad: calcula la ruta, la pasa y deja el 401 en elect.log.
+EB="$T/elect"; mkdir -p "$EB"; cp "$V2/Sentinel-Wheel.awk" "$EB/"; cp "$B/fleet.token" "$EB/"
+printf 'NAME=nodo01\nPORT=8181\nRQLITE=http://127.0.0.1:4001\n' > "$EB/sentinel.conf"
+: > "$EB/peers.tsv"; for i in 1 2 3 4 5 6 7 8 9 10 11; do printf '10.1.0.%s\tSentinel 2.0.0\teye\t1\n' "$i" >> "$EB/peers.tsv"; done
+printf 'nodo09\n' > "$EB/wheel.state"; rm -f "$M"/nodo.*
+fitness 10.1.0.1 nodo01; cp "$M/nodo.10.1.0.1" "$M/nodo.127.0.0.1"; for i in 2 3 4 5; do fitness 10.1.0.$i nodo0$i; done
+clave "$CV"; exige "$CB"; : > "$M/argv.log"
+elect(){ ( cd "$T" && PATH="$BIN:$PATH" MUNDO="$M" HOME="$H" SENTINEL_BASE="$EB" SENTINEL_NOJITTER=1 "$SHX" "$V2/service/elect.sh" > /dev/null 2>&1 ); }
+elect
+si "K9 elect.sh pasa la ruta por defecto: /nodes con -K" 'grep "/nodes?" "$M/argv.log" | grep -qF -- "-K $CRED "'
+si "K9 con 401 en /nodes, elect.log lo dice (sin debug)" 'grep -q "\[wheel\] rqlite rechaza las credenciales (401)" "$EB/elect.log"'
+si "K9 y con peers.tsv de toda la flota no se corona por ello" 'grep -q "solo veo 5 de 11" "$EB/elect.log" && [ "$(cat "$EB/wheel.state")" = nodo09 ] && [ "$(wc -l < "$EB/peers.tsv")" = 11 ]'
+# WheelAlcanzable: con 200 opina (control); con 401 no opina (-1).
+rm -f "$M"/nodo.* "$T/ws.self"; printf '10.1.0.1\tx\teye\t1\n10.1.0.2\tx\teye\t1\n10.1.0.3\tx\teye\t1\n' > "$T/peers.tsv"
+nodos_json 10.1.0.1:true:true 10.1.0.2:true:false 10.1.0.3:true:false
+fitness 10.1.0.1 nodo01; cp "$M/nodo.10.1.0.1" "$M/nodo.127.0.0.1"; fitness 10.1.0.2 nodo02
+printf 'nodo03\n' > "$T/ws"; printf '1\n' > "$T/ws.miss"; printf '10.1.0.3\n' > "$T/ws.ip"
+clave "$CB"; exige "$CB"; RQCRED_E="$CRED" elegir nodo01
+si "K9 control: con la clave buena rqlite ve al Wheel y no se releva" 'printf "%s" "$EL" | grep -q "la ceguera es mia" && [ "$(cat "$T/ws")" = nodo03 ]'
+printf '1\n' > "$T/ws.miss"; clave "$CV"; RQCRED_E="$CRED" elegir nodo01
+si "K9 con 401 la segunda opinion no vale (-1) y lo dice" 'printf "%s" "$EL" | grep -q "rqlite rechaza las credenciales (401): sin segunda opinion" && printf "%s" "$EL" | grep -q "sin responder (sin segunda opinion): procede el relevo"'
+sin_cred
+si "K2 en todo el banco la clave nunca va en la linea de comandos" '[ -s "$ARGV_TODO" ] && ! grep -q -e "$CB" -e "$CV" "$ARGV_TODO" && ! grep -qs -e "$CB" -e "$CV" "$EB/elect.log"'
 
 echo
 echo "Resultado: $PASS pasan, $FAIL fallan"

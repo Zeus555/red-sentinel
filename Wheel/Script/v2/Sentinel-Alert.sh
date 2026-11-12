@@ -15,6 +15,12 @@
 #   - datos: que la telemetria de cada nodo siga llegando. En Termux la
 #     temperatura y la bateria las escribe el CRON: si cron muere, el agente sigue
 #     respondiendo y tambien parecia sano (sentinel017, 16 h sin datos el 09/11);
+#   - base (df:flota): que la base reciba datos de ALGUIEN. Si ningun nodo escribe
+#     no se culpa a cada uno (eso seria media flota "sin datos"), pero se avisa una
+#     vez de la base: contrasena rechazada en toda la flota, cron parado en todos o
+#     mi replica atrasada. Antes ese caso no lo decia nadie;
+#   - credenciales (au:<nodo>): que rqlite acepte la contrasena de ESTE nodo. Un
+#     401 tiene su propio aviso: no es "sin lider" (503) ni "rqlited caido" (000);
 #   - EXTRA_CHECKS: equipos sin agente Sentinel, como sentinel020;
 #   - bateria: enchufado pero perdiendo carga (lo de siempre).
 #
@@ -50,6 +56,29 @@ DRY="${DRY:-0}"
 
 [ -r "$CONF" ] || exit 0
 . "$CONF"
+# Credenciales de rqlite: fichero 600 con una linea  user = "usuario:clave".
+# Van por -K, asi no salen en ps. Sin fichero se pregunta sin credenciales, como
+# siempre: un rqlited sin -auth las ignora de todos modos.
+RQLITE_CRED="${RQLITE_CRED:-$HOME/.config/rqlite/sentinel.curlrc}"
+rqcurl(){ if [ -r "$RQLITE_CRED" ]; then curl -K "$RQLITE_CRED" "$@"; else curl "$@"; fi; }
+# Peticion a rqlite sabiendo el codigo HTTP: deja el cuerpo (el mismo que antes,
+# sin la linea del codigo) en RQ_CUERPO y el codigo en RQ_HC (000 = no contesto).
+# Se llama SIN $(...): tiene que dejar variables en esta shell. A lo largo de la
+# pasada lleva RQ_401 (endpoints que rechazaron las credenciales, sin repetir) y
+# RQ_OK=1 si alguna peticion con credenciales salio bien. /readyz no cuenta para
+# RQ_OK: queda abierto a todos (usuario "*"), asi que su 200 no prueba la clave.
+RQ_401=""; RQ_OK=0; RQ_HC=000; RQ_CUERPO=""
+rqpide(){ # $1=endpoint (para el aviso) y despues los argumentos de curl
+  _rqe="$1"; shift
+  _rqr=$(rqcurl "$@" -w '\n%{http_code}' 2>/dev/null)
+  RQ_HC=$(printf '%s' "$_rqr" | tail -n 1)
+  RQ_CUERPO=$(printf '%s\n' "$_rqr" | sed '$d')
+  case "$RQ_HC" in [0-9][0-9][0-9]) ;; *) RQ_HC=000 ;; esac
+  case "$RQ_HC" in
+    2??) [ "$_rqe" = /readyz ] || RQ_OK=1 ;;
+    401) case ", $RQ_401, " in *", $_rqe, "*) ;; *) RQ_401="${RQ_401:+$RQ_401, }$_rqe" ;; esac ;;
+  esac
+}
 [ -r "$BASE/fleet.token" ] && TOKEN=$(cat "$BASE/fleet.token")
 [ -n "${TOKEN:-}" ] || exit 0
 PORT="${PORT:-8181}"
@@ -127,8 +156,13 @@ trap 'exit 1' INT TERM HUP
 # Wheel, para saber a quien vigilar y para ver que rqlited alcanza el cluster.
 # 'nonvoters' es obligatorio: sin el, /nodes solo lista los nodos con voto (3 desde
 # el 2026-10-30) y el resto de la flota dejaria de vigilarse sin ningun aviso.
+# Con 401 (credenciales rechazadas) la lista queda vacia y se tira de peers.tsv,
+# como cuando rqlite no contesta.
 NODOS_JSON=""
-[ -n "${RQLITE:-}" ] && NODOS_JSON=$(curl -s -m 5 "$RQLITE/nodes?nonvoters&timeout=2s" 2>/dev/null)
+if [ -n "${RQLITE:-}" ]; then
+  rqpide /nodes -s -m 5 "$RQLITE/nodes?nonvoters&timeout=2s"
+  [ "$RQ_HC" = 401 ] || NODOS_JSON="$RQ_CUERPO"
+fi
 
 # Segunda comprobacion, contra la RED y no contra mi fichero: si otro nodo
 # tambien se cree Wheel, callarse y dejar avisar solo a uno. Con una eleccion
@@ -220,12 +254,17 @@ RECORD=$(( $(entero "${RECORDATORIO_H:-24}" 24) * 3600 ))
 
 # --- 1. rqlite: ¿tiene lider visto desde aqui? ----------------------------
 # /readyz de mi propio rqlited: 200 = tiene lider; 503 = sin lider (tormenta de
-# elecciones, sin quorum); sin respuesta = el rqlited de este nodo no contesta.
+# elecciones, sin quorum); sin respuesta = el rqlited de este nodo no contesta;
+# 401 = rechaza mis credenciales: no se sabe si hay lider, asi que __cl__ no se
+# observa (conserva su estado) y el 401 lo cuenta au: (punto 7). Como con el 503,
+# RZ no es 200 y esta pasada no se miran rq: ni dt:.
 RZ=""
 if [ -n "${RQLITE:-}" ]; then
-  RZ=$(curl -s -m 5 -o /dev/null -w '%{http_code}' "$RQLITE/readyz" 2>/dev/null)
+  rqpide /readyz -s -m 5 "$RQLITE/readyz"
+  RZ="$RQ_HC"
   case "$RZ" in
     200) obs "__cl__" "rqlite" ok "" "$RQ_GRACIA" ;;
+    401) ;;
     000|"") obs "__cl__" "rqlite" mal "el rqlited de $NAME no responde" "$RQ_GRACIA" ;;
     *) obs "__cl__" "rqlite" mal "el clúster no tiene líder visto desde $NAME (readyz $RZ)" "$RQ_GRACIA" ;;
   esac
@@ -332,7 +371,8 @@ if [ -n "${RQLITE:-}" ] && [ -n "$VIVOS" ]; then
   # Solo filas de las ultimas 2 h: un nodo retirado (o que dejo de mandar) no debe
   # quedarse con su ultima lectura vieja recordandose cada dia. Que deje de mandar
   # ya lo avisa la vigilancia de datos (dt:).
-  BRAW=$(curl -s -m 12 -G "$RQLITE/db/query" --data-urlencode "q=$BQ" --data-urlencode "level=none" 2>/dev/null)
+  rqpide /db/query -s -m 12 -G "$RQLITE/db/query" --data-urlencode "q=$BQ" --data-urlencode "level=none"
+  BRAW="$RQ_CUERPO"
   case "$BRAW" in *'"values"'*)
     BR=$(printf '%s' "$BRAW" | sed 's/.*"values":\[//; s/\]}.*//' | sed 's/\],\[/\n/g' | tr -d '[]"')
     IFS='
@@ -375,8 +415,8 @@ if [ "$RZ" = 200 ] && [ -n "$NODOS_JSON" ]; then
   # La IP sale de "addr" (la direccion Raft, que viene de la configuracion del
   # cluster) y NO de "api_addr": rqlite solo rellena api_addr si el nodo contesta,
   # asi que justo el nodo inalcanzable venia sin el y nunca se avisaba. Los regex
-  # admiten espacios tras los dos puntos, y '{' parte tanto la lista como el
-  # formato antiguo en mapa.
+  # admiten espacios tras los dos puntos, y '{' parte tanto el mapa por id de
+  # rqlite v10 ({"id":{...},...}) como la lista {"nodes":[...]} de otras versiones.
   RQMAP=$(printf '%s' "$NODOS_JSON" | tr '{' '\n' | "$AWK" '
     /"addr"[ ]*:/ { ip=""; r=""; v=""
       if (match($0, /"addr"[ ]*:[ ]*"[0-9.]+:/)) { s=substr($0,RSTART,RLENGTH); sub(/^"addr"[ ]*:[ ]*"/,"",s); sub(/:$/,"",s); ip=s }
@@ -399,8 +439,14 @@ fi
 # Solo con rqlite sano (mi readyz = 200) y solo si la base de verdad recibe datos:
 # el dato MAS reciente de toda la flota tiene que ser de los ultimos 5 min
 # (temperatura, cada minuto) o 15 min (bateria, cada 5). Si no, el problema es la
-# base o mi replica, no los nodos, y lo cubre el punto 1; antes, con la base
-# congelada, salia un "datos no llegan" de media flota. Gracia de 2 pasadas.
+# base o mi replica, no los nodos; antes, con la base congelada, salia un "datos
+# no llegan" de media flota. Gracia de 2 pasadas.
+# Ese caso tiene su propia clave, df:flota: con lider (readyz 200) y la consulta
+# respondida, que NADIE escriba es un problema de toda la base (contrasena
+# rechazada en toda la flota, cron parado en todos, mi replica atrasada) y antes
+# no lo avisaba nadie. Se dice una vez, con la edad del ultimo dato. Si ninguno de
+# los consultados escribio nunca (ni tiene clave dt:) no se opina: puede ser solo
+# la laptop, que no manda nada.
 DGRACIA=$(entero "${DATOS_GRACIA:-600}" 600)
 if [ -n "${RQLITE:-}" ] && [ "$RZ" = 200 ] && [ -n "$VIVOS_DT" ]; then
   SUB=""
@@ -413,20 +459,24 @@ if [ -n "${RQLITE:-}" ] && [ "$RZ" = 200 ] && [ -n "$VIVOS_DT" ]; then
     # La referencia de la flota es el dato mas reciente de cada tabla entre todos
     # los nodos consultados (sale del indice, sin recorrer la tabla).
     DQ="SELECT n,(SELECT MAX(ts) FROM sentinel_temp WHERE node=n),(SELECT MAX(ts) FROM sentinel_bateria WHERE node=n) FROM ($SUB)"
-    DRAW=$(curl -s -m 12 -G "$RQLITE/db/query" --data-urlencode "q=$DQ" --data-urlencode "level=none" 2>/dev/null)
+    rqpide /db/query -s -m 12 -G "$RQLITE/db/query" --data-urlencode "q=$DQ" --data-urlencode "level=none"
+    DRAW="$RQ_CUERPO"
     case "$DRAW" in *'"values"'*)
       printf '%s' "$DRAW" | sed 's/.*"values":\[//; s/\]}.*//' | sed 's/\],\[/\n/g' | tr -d '[]" ' \
       | "$AWK" -F, -v now="$AHORA" -v tmax="$TMAX" -v btmax="$BTMAX" -v antes="$STATE" -v g="$DGRACIA" '
         function dur(s){ if (s<3600) return int(s/60) " min"; if (s<86400) return int(s/3600) " h " int((s%3600)/60) " min"; return int(s/86400) " d " int((s%86400)/3600) " h" }
         function num(x){ return (x=="null"||x=="") ? "" : x+0 }
+        function hace(x){ return (x=="") ? "nunca" : "hace " dur(now-x) }
         BEGIN { while ((getline l < antes) > 0) if (l ~ /^dt:/) { split(l, a, "|"); Prev[substr(a[1],4)] = 1 } }
-        { n=$1; N[++k]=n; T[n]=num($2); B[n]=num($3)
+        { n=$1; N[++k]=n; T[n]=num($2); B[n]=num($3); if (n in Prev) hayPrev=1
           if (T[n]!="" && (mt=="" || T[n]>mt)) mt=T[n]
           if (B[n]!="" && (mb=="" || B[n]>mb)) mb=B[n] }
         END {
           okT = (mt!="" && now-mt <= 300)     # la base recibe temperatura
           okB = (mb!="" && now-mb <= 900)     # la base recibe bateria
-          if (!okT && !okB) exit              # base parada o replica atrasada: no opinar
+          if (okT || okB) printf "O|df:flota|flota|ok||%d\n", g
+          else if (mt!="" || mb!="" || hayPrev) printf "O|df:flota|flota|mal|última temperatura %s; última batería %s|%d\n", hace(mt), hace(mb), g
+          if (!okT && !okB) exit              # base parada o replica atrasada: no culpar a cada nodo
           for (i=1;i<=k;i++){ n=N[i]; d=""; vale=0
             if (okT && T[n]!="") { vale=1; if (now-T[n] > tmax) d = "sin temperatura desde hace " dur(now-T[n]) }
             if (okB && B[n]!="") { vale=1; if (now-B[n] > btmax) d = d (d==""?"":"; ") "sin batería desde hace " dur(now-B[n]) }
@@ -467,9 +517,33 @@ for par in $(printf '%s' "${EXTRA_CHECKS:-}" | tr ',' ' '); do
 done
 set +f
 
+# --- Wheel anterior (sentinel_vigia) --------------------------------------
+# Se lee aqui, antes del motor, para que su respuesta tambien cuente en au: (es
+# la unica consulta que se hace en todas las pasadas). Se usa mas abajo, en el
+# cambio de Wheel; la fila solo se escribe al final, asi que leerla antes no
+# cambia nada.
+WANT=""
+if [ -n "${RQLITE:-}" ]; then
+  rqpide /db/query -s -m 6 -G "$RQLITE/db/query" --data-urlencode "q=SELECT ts, wheel, pendientes FROM sentinel_vigia WHERE clave='avisos'" \
+        --data-urlencode "level=none"
+  _v=$(printf '%s' "$RQ_CUERPO" | grep -oE '"values":\[\[[^]]*' | sed 's/.*\[\[//' | tr -d '" ' | cut -d, -f2)
+  case "$_v" in ''|*[!A-Za-z0-9_.-]*) ;; *) WANT="$_v" ;; esac
+fi
+
+# --- 7. ¿Acepta rqlite mis credenciales? ----------------------------------
+# Un 401 en cualquier peticion de esta pasada = rqlite rechaza la contrasena de
+# este nodo (fichero de credenciales viejo tras una rotacion, o ausente cuando ya
+# se exige). Sin gracia: no es un fallo que vaya y venga. Si nada de rqlite
+# contesto (rqlited caido) no se sabe: la clave conserva su estado.
+if [ -n "$RQ_401" ]; then
+  obs "au:$NAME" "$NAME" mal "rqlite rechaza sus credenciales (401 en $RQ_401)" 0
+elif [ "$RQ_OK" = 1 ]; then
+  obs "au:$NAME" "$NAME" ok "" 0
+fi
+
 # --- Motor: de lo observado a avisos y estado -----------------------------
 # Formato de alert.state:  clave|nombre|estado|desde|ult_aviso|visto|ok_desde
-#   clave: la IP (nodos) o un prefijo rq: dt: ex: bt: y __cl__.
+#   clave: la IP (nodos) o un prefijo rq: dt: df: au: ex: bt: y __cl__.
 #   desde: epoch del primer fallo de la racha (alimenta la tolerancia y la duracion).
 #   ult_aviso: epoch del ultimo aviso de esta racha (para el recordatorio).
 #   visto: ultima vez que se observo. Lo que no se observa se conserva tal cual
@@ -503,6 +577,14 @@ function bala(k,clase,det,espera,g,   t,ip){
 		if (clase=="mal") return "• " Nom[k] ": " det
 		if (clase=="bien") return "• " Nom[k]
 		return "• " Nom[k] ": " det }
+	if (t=="df") {
+		if (clase=="mal") return "• " det
+		if (clase=="bien") return "• toda la flota" ((Desde[k]!="") ? " tras " dur(now-Desde[k]) : "")
+		return "• la base no recibe datos nuevos: " det " (desde hace " dur(now-Desde[k]) ")" }
+	if (t=="au") {
+		if (clase=="mal") return "• " Nom[k] ": " det
+		if (clase=="bien") return "• " Nom[k] ((Desde[k]!="") ? " tras " dur(now-Desde[k]) : "")
+		return "• " Nom[k] ": " det " (desde hace " dur(now-Desde[k]) ")" }
 	if (t=="ex") {
 		if (clase=="mal") return "• " Nom[k] " (" det ")"
 		if (clase=="bien") return "• " Nom[k] ((Desde[k]!="") ? " tras " dur(now-Desde[k]) : "")
@@ -621,10 +703,14 @@ mandar caido   "🔴 Sentinel: nodo sin responder:" "Dos sondeos fallidos al pue
 mandar vuelto  "🟢 Sentinel: nodo recuperado:" "$W"
 mandar cl_mal  "🔴 Sentinel: rqlite sin líder:" "Sin líder no se guarda telemetría ni responde el chatbot. $W"
 mandar cl_bien "🟢 Sentinel: rqlite de vuelta:" "$W"
+mandar au_mal  "🔴 Sentinel: rqlite rechaza la contraseña de:" "Revisar ~/.config/rqlite/sentinel.curlrc (o RQLITE_CRED de sentinel.conf) en ese nodo. Sin credenciales válidas, ese nodo no guarda telemetría ni vigila bien. $W"
+mandar au_bien "🟢 Sentinel: rqlite vuelve a aceptar la contraseña de:" "$W"
 mandar rq_mal  "🔴 Sentinel: el clúster no alcanza el rqlite de:" "El agente del nodo sí responde: lo caído es su rqlited. $W"
 mandar rq_bien "🟢 Sentinel: rqlite de vuelta en el clúster:" "$W"
-mandar dt_mal  "🟠 Sentinel: el nodo responde, pero sus datos no llegan:" "Temperatura = thermal-guard; batería = Sentinel-Bateria. En Termux los dos van por cron: si se paró, tampoco corren ahí la elección, los avisos ni el vigilante. $W"
+mandar dt_mal  "🟠 Sentinel: el nodo responde, pero sus datos no llegan:" "Temperatura = thermal-guard; batería = Sentinel-Bateria. En Termux los dos van por cron: si se paró, tampoco corren ahí la elección, los avisos ni el vigilante. Si rqlite ya pide contraseña, también puede ser que rechace la de ese nodo (revisar ~/.config/rqlite/sentinel.curlrc). $W"
 mandar dt_bien "🟢 Sentinel: vuelven a llegar los datos de:" "$W"
+mandar df_mal  "🔴 Sentinel: la base no recibe datos nuevos de ningún nodo:" "rqlite tiene líder, pero nadie escribe. Causas posibles: la contraseña rechazada (401) en toda la flota, el cron parado en todos los nodos o la réplica de $NAME atrasada. $W"
+mandar df_bien "🟢 Sentinel: la base vuelve a recibir datos:" "$W"
 mandar ex_mal  "🔴 Sentinel: equipo sin responder:" "Dos sondeos fallidos. $W"
 mandar ex_bien "🟢 Sentinel: equipo recuperado:" "$W"
 mandar bt_mal  "🔋 Sentinel: enchufado pero perdiendo batería:" "Android corta la carga por encima de unos 42 °C. $W"
@@ -637,12 +723,7 @@ mandar recuerdo "🟠 Sentinel: sigue pendiente (recordatorio cada $(( RECORD / 
 # propio nombre, asi que comparando con el no salia nunca este aviso en un relevo
 # real. Sin rqlite se mira el fichero, como antes. Si el envio falla, el latido
 # guarda el Wheel anterior para que la pasada siguiente lo reintente.
-WANT=""
-if [ -n "${RQLITE:-}" ]; then
-  _v=$(curl -s -m 6 -G "$RQLITE/db/query" --data-urlencode "q=SELECT ts, wheel, pendientes FROM sentinel_vigia WHERE clave='avisos'" \
-        --data-urlencode "level=none" 2>/dev/null | grep -oE '"values":\[\[[^]]*' | sed 's/.*\[\[//' | tr -d '" ' | cut -d, -f2)
-  case "$_v" in ''|*[!A-Za-z0-9_.-]*) ;; *) WANT="$_v" ;; esac
-fi
+# (WANT se leyo antes del motor, para que esa consulta cuente en au:.)
 WLOCAL=$(printf '%s\n' "$ANTES" | sed -n 's/^__wheel__=//p' | head -1)
 [ -n "$WANT" ] || WANT="$WLOCAL"
 # Solo si de verdad acabo de llegar: mi alert.state no dice ya que soy yo (o es de
@@ -679,8 +760,11 @@ fi
 # La hora de esta pasada, para que alguien de FUERA pueda ver que los avisos
 # siguen corriendo (Sentinel-Latido.sh la lleva a la EC2). 'pendientes' = envios
 # que fallaron en esta pasada: si no baja de 0, Telegram no esta llegando.
+# Si rqlite no lo acepta (401, sin lider...) queda en alert.log: la EC2 vera que
+# la pasada no avanza, y aqui se sabra por que.
 if [ "$DRY" != "1" ] && [ -n "${RQLITE:-}" ]; then
-  curl -s -m 8 -o /dev/null -XPOST "$RQLITE/db/execute" -H 'Content-Type: application/json' \
-    -d "[[\"CREATE TABLE IF NOT EXISTS sentinel_vigia (clave TEXT PRIMARY KEY, ts INTEGER NOT NULL, wheel TEXT, pendientes INTEGER)\"], [\"INSERT OR REPLACE INTO sentinel_vigia (clave, ts, wheel, pendientes) VALUES (?, ?, ?, ?)\", \"avisos\", $AHORA, \"$WLAT\", $FALLOS]]" 2>/dev/null
+  rqpide /db/execute -s -m 8 -XPOST "$RQLITE/db/execute" -H 'Content-Type: application/json' \
+    -d "[[\"CREATE TABLE IF NOT EXISTS sentinel_vigia (clave TEXT PRIMARY KEY, ts INTEGER NOT NULL, wheel TEXT, pendientes INTEGER)\"], [\"INSERT OR REPLACE INTO sentinel_vigia (clave, ts, wheel, pendientes) VALUES (?, ?, ?, ?)\", \"avisos\", $AHORA, \"$WLAT\", $FALLOS]]"
+  [ "$RQ_HC" = 200 ] || registrar latido "FALLO http=$RQ_HC" "no se pudo apuntar la pasada en sentinel_vigia"
 fi
 exit 0

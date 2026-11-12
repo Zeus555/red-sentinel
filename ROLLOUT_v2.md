@@ -96,7 +96,7 @@ ssh <nodo> '
   curl -s http://127.0.0.1:8081/health       # inflight/queued coherentes
   sv status rqlited                          # EL CLÚSTER SIGUE BIEN
 '
-curl -s "http://<ip>:4001/status?pretty" | grep -E "node_id|state"   # sigue en el clúster
+curl -s -K ~/.config/rqlite/sentinel.curlrc "http://<ip>:4001/status?pretty" | grep -E "node_id|state"   # sigue en el clúster (sin -K: 401)
 ```
 
 **Ojo con el diagnóstico en Android** (ver memoria de gotchas): `pgrep` no ve
