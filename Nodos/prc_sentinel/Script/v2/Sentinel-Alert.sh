@@ -22,7 +22,10 @@
 #   - credenciales (au:<nodo>): que rqlite acepte la contrasena de ESTE nodo. Un
 #     401 tiene su propio aviso: no es "sin lider" (503) ni "rqlited caido" (000);
 #   - EXTRA_CHECKS: equipos sin agente Sentinel, como sentinel020;
-#   - bateria: enchufado pero perdiendo carga (lo de siempre).
+#   - bateria: enchufado pero perdiendo carga (lo de siempre);
+#   - BTC (bv:<producto>, bs:senales): que el monitoreo de BTC (btc/,
+#     temporizador en sentinel014) siga escribiendo velas nuevas en rqlite, y
+#     que sus señales salgan.
 #
 # QUE AVISA: transiciones, no estados. Mensaje al pasar a mal y al volver, mas un
 # RECORDATORIO cada RECORDATORIO_H horas mientras siga mal: antes una caida de
@@ -474,6 +477,10 @@ if [ -n "${RQLITE:-}" ] && [ "$RZ" = 200 ] && [ -n "$VIVOS_DT" ]; then
         END {
           okT = (mt!="" && now-mt <= 300)     # la base recibe temperatura
           okB = (mb!="" && now-mb <= 900)     # la base recibe bateria
+          # Para 5b: mi replica esta al dia (lo mas reciente de la flota, de
+          # temperatura o de bateria, tiene <= 5 min). El motor no lo lee.
+          mx = (mt != "" && (mb == "" || mt > mb)) ? mt : mb
+          if (mx != "" && now - mx <= 300) print "T|fresca"
           if (okT || okB) printf "O|df:flota|flota|ok||%d\n", g
           else if (mt!="" || mb!="" || hayPrev) printf "O|df:flota|flota|mal|última temperatura %s; última batería %s|%d\n", hace(mt), hace(mb), g
           if (!okT && !okB) exit              # base parada o replica atrasada: no culpar a cada nodo
@@ -486,6 +493,58 @@ if [ -n "${RQLITE:-}" ] && [ "$RZ" = 200 ] && [ -n "$VIVOS_DT" ]; then
           } }' >> "$OBS" ;;
     esac
   fi
+fi
+
+# --- 5b. ¿Sigue funcionando el monitoreo de BTC? ---------------------------
+# La pasada de BTC (sentinel014, cada 5 min; ver btc/README.md) reescribe en
+# cada pasada las ultimas velas diarias de cada producto con actualizado = la
+# hora de la pasada, y despues de medianoche UTC trae la vela del dia. Por
+# producto (bv:<producto>) se avisa si:
+#   - no escribe desde hace mas de BTC_DATOS_MAX_MIN (15 = tres pasadas): falla
+#     la pasada, su temporizador o el propio 014 (y entonces ya hay aviso del
+#     nodo);
+#   - escribe, pero no hay vela de hoy pasado ese plazo tras medianoche UTC:
+#     Coinbase no la trae (producto parado, vencido o renombrado).
+# Un producto escrito por ultima vez mas de una semana antes que el mas al dia
+# se da por retirado (se quito de BTC_PRODUCTOS) y deja de mirarse; si se paran
+# TODOS, se siguen mirando, con su recordatorio, aunque pasen semanas (y uno
+# retirado hace tiempo sigue fuera).
+# Y las señales (bs:senales): la pasada apunta en sentinel_vigia (btc-senales)
+# desde cuando falla su paso 7 (Telegram que no acepta, el calculo, rqlite); se
+# avisa si lleva fallando mas de ese mismo plazo. Ese fallo no deja de escribir
+# las velas, asi que bv: no lo ve.
+# Solo con mi replica al dia (temperatura de la flota de hace <= 5 min, "T|fresca"
+# del punto 5): con la base parada o mi replica atrasada no se culpa a BTC. Sin
+# la tabla, o si la consulta falla, no se observa nada y las claves conservan su
+# estado.
+BVMAX=$(( $(entero "${BTC_DATOS_MAX_MIN:-15}" 15) * 60 ))
+if [ -n "${RQLITE:-}" ] && [ "$RZ" = 200 ] && grep -q '^T|fresca' "$OBS"; then
+  VQ="SELECT producto, MAX(actualizado), MAX(ts) FROM cripto_vela WHERE marco='1d' GROUP BY producto"
+  rqpide /db/query -s -m 12 -G "$RQLITE/db/query" --data-urlencode "q=$VQ" --data-urlencode "level=none"
+  case "$RQ_CUERPO" in *'"values"'*)
+    printf '%s' "$RQ_CUERPO" | sed 's/.*"values":\[//; s/\]}.*//' | sed 's/\],\[/\n/g' | tr -d '[]" ' \
+    | "$AWK" -F, -v now="$AHORA" -v max="$BVMAX" '
+      function dur(s){ if (s<3600) return int(s/60) " min"; if (s<86400) return int(s/3600) " h " int((s%3600)/60) " min"; return int(s/86400) " d " int((s%86400)/3600) " h" }
+      function fecha(t,  z,era,doe,yoe,doy,mp,d,m){ z=int(t/86400)+719468; era=int(z/146097); doe=z-era*146097; yoe=int((doe-int(doe/1460)+int(doe/36524)-int(doe/146096))/365); doy=doe-(365*yoe+int(yoe/4)-int(yoe/100)); mp=int((5*doy+2)/153); d=doy-int((153*mp+2)/5)+1; m=(mp<10)?mp+3:mp-9; return sprintf("%02d/%02d",d,m) }
+      $1 ~ /^[A-Z0-9-]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ { n++; P[n]=$1; A[n]=$2; V[n]=$3; if (fr=="" || now-$2 < fr) fr=now-$2 }
+      END { for (i=1;i<=n;i++) { e=now-A[i]
+          if (e - fr > 604800) continue          # retirado: una semana mas viejo que el mas al dia
+          if (e > max) printf "O|bv:%s|%s|mal|sin escribir desde hace %s|0\n", P[i], P[i], dur(e)
+          else if (now - V[i] > 86400 + max) printf "O|bv:%s|%s|mal|escribe, pero Coinbase no trae la vela del %s (UTC); la última es del %s|0\n", P[i], P[i], fecha(V[i] + 86400), fecha(V[i])
+          else printf "O|bv:%s|%s|ok||0\n", P[i], P[i] } }' >> "$OBS" ;;
+  esac
+  rqpide /db/query -s -m 8 -G "$RQLITE/db/query" --data-urlencode "q=SELECT ts, pendientes, wheel FROM sentinel_vigia WHERE clave='btc-senales'" \
+        --data-urlencode "level=none"
+  _s=$(printf '%s' "$RQ_CUERPO" | grep -oE '"values":\[\[[^]]*' | sed 's/.*\[\[//' | tr -d '" ')
+  _sts=$(printf '%s' "$_s" | cut -d, -f1); _src=$(printf '%s' "$_s" | cut -d, -f2)
+  case "$_sts" in ''|*[!0-9]*) ;; *)
+    case "$_src" in ''|*[!0-9]*) ;; 0) obs "bs:senales" "señales de BTC" ok "" 0 ;; *)
+      if [ $((AHORA - _sts)) -gt "$BVMAX" ]; then
+        _sd=$(( AHORA - _sts )); if [ "$_sd" -lt 3600 ]; then _sd="$((_sd / 60)) min"; elif [ "$_sd" -lt 86400 ]; then _sd="$((_sd / 3600)) h $(( (_sd % 3600) / 60 )) min"; else _sd="$((_sd / 86400)) d $(( (_sd % 86400) / 3600 )) h"; fi
+        obs "bs:senales" "señales de BTC" mal "fallan desde hace $_sd (el paso 7 sale con $_src)" 0
+      else obs "bs:senales" "señales de BTC" ok "" 0; fi ;;
+    esac ;;
+  esac
 fi
 
 # --- 6. Equipos sin agente Sentinel (EXTRA_CHECKS) -------------------------
@@ -543,7 +602,7 @@ fi
 
 # --- Motor: de lo observado a avisos y estado -----------------------------
 # Formato de alert.state:  clave|nombre|estado|desde|ult_aviso|visto|ok_desde
-#   clave: la IP (nodos) o un prefijo rq: dt: df: au: ex: bt: y __cl__.
+#   clave: la IP (nodos) o un prefijo rq: dt: df: au: ex: bt: bv: bs: y __cl__.
 #   desde: epoch del primer fallo de la racha (alimenta la tolerancia y la duracion).
 #   ult_aviso: epoch del ultimo aviso de esta racha (para el recordatorio).
 #   visto: ultima vez que se observo. Lo que no se observa se conserva tal cual
@@ -593,6 +652,12 @@ function bala(k,clase,det,espera,g,   t,ip){
 		if (clase=="mal") return "• " Nom[k] " " det
 		if (clase=="bien") return "• " Nom[k] " " det
 		return "• " Nom[k] ": batería " det }
+	if (t=="bv" || t=="bs") {
+		# Al volver, sin "tras X": Desde es cuando el Wheel lo vio mal, que es el
+		# plazo despues de la ultima escritura; la cifra contradiria la del aviso.
+		if (clase=="mal") return "• " Nom[k] ": " det
+		if (clase=="bien") return "• " Nom[k]
+		return "• " Nom[k] ": " det }
 	return "• " k
 }
 BEGIN { FS="|" }
@@ -715,6 +780,10 @@ mandar ex_mal  "🔴 Sentinel: equipo sin responder:" "Dos sondeos fallidos. $W"
 mandar ex_bien "🟢 Sentinel: equipo recuperado:" "$W"
 mandar bt_mal  "🔋 Sentinel: enchufado pero perdiendo batería:" "Android corta la carga por encima de unos 42 °C. $W"
 mandar bt_bien "🔌 Sentinel: batería recuperada:" "$W"
+mandar bv_mal  "🟠 Sentinel: el monitoreo de BTC no está al día:" "Lo escribe sentinel014 cada 5 min (temporizador sentinel-btc-velas). En 014: tail ~/PRC_Sentinel/btc/velas.log y journalctl --user -u sentinel-btc-velas. Sin esto tampoco salen las señales de mercado. $W"
+mandar bv_bien "🟢 Sentinel: el monitoreo de BTC vuelve a estar al día:" "$W"
+mandar bs_mal  "🟠 Sentinel: las señales de BTC no salen:" "Las calcula y las manda por Telegram la pasada de sentinel014 (paso 7). En 014: grep señales ~/PRC_Sentinel/btc/velas.log. Las de una vela cerrada hace más de 36 h ya no se mandarán. $W"
+mandar bs_bien "🟢 Sentinel: las señales de BTC vuelven a salir:" "$W"
 mandar recuerdo "🟠 Sentinel: sigue pendiente (recordatorio cada $(( RECORD / 3600 )) h):" "$W"
 
 # --- Cambio de Wheel ------------------------------------------------------

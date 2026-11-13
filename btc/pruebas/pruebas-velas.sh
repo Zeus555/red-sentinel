@@ -7,6 +7,8 @@
 #      falsa entera contra un calculo independiente (indicadores-ref.js).
 #   F. Fibonacci (fibonacci-calculo.awk): casos hechos a mano, la serie falsa y
 #      480 series al azar contra un calculo independiente (fibonacci-ref.js).
+#   V. Señales (avisos-calculo.awk): casos hechos a mano, el reparto entre
+#      perpetuo y spot, errores, el JSON y series al azar contra avisos-ref.js.
 #   C. Pasadas reales del script contra un rqlite LOCAL con contraseña y un
 #      Coinbase falso (cb-falso.js). Cada resultado (velas e indicadores) se
 #      compara, fila a fila, con los calculos independientes en JavaScript
@@ -333,6 +335,181 @@ if command -v node >/dev/null 2>&1; then
   case "$r" in "coincide en las 480"*) pasa "F14 series al azar contra la referencia: $r" ;; *) falla "F14 series al azar contra la referencia" "$r" ;; esac
 fi
 
+# ============================ V. Señales ======================================
+AVIS="$BTC/avisos-calculo.awk"
+# Corriente a mano. vv <prod> <marco> <ts> <cierre> <ha_apertura> <ha_cierre> [cerrada]
+vv(){ printf '%s\tV\t%s\t%s\t%s\t%s\t%s\t%s\t1\t%s\t%s\t%s\t%s\t%s\tnull\n' "$1" "$2" "$3" "$4" "$4" "$4" "$4" "$5" "$6" "$5" "$6" "${7:-1}"; }
+# ii <prod> <marco> <ts> <ema100> <ema200> <rl_centro> <rl_sup> <rl_pendiente> <rl_ruptura> [base]
+ii(){ printf '%s\tI\t%s\t%s\t%s\t%s\t%s\tnull\tnull\tnull\t%s\t%s\tnull\t%s\tnull\t%s\t1\n' "$1" "$2" "${10:-real}" "$3" "$4" "$5" "$6" "$7" "$8" "$9"; }
+# ff <prod> <nivel> <precio>: el mismo nivel (ciclo 80 -> 120) para cada vela de
+# $FC (los niveles van por vela candidata: los de antes de que cerrara).
+# fx <prod> <vela> <nivel> <precio> <alto>: un nivel solo para esa vela.
+ff(){ for c_ in $FC; do printf '%s\tF\t%s\t%s\t%s\t1\t80\t2\t120\t0.333\n' "$1" "$c_" "$2" "$3"; done; }
+fx(){ printf '%s\tF\t%s\t%s\t%s\t1\t80\t2\t%s\t0.333\n' "$1" "$2" "$3" "$4" "$5"; }
+D1=$D0; D2=$((D0 + 86400)); D3=$((D0 + 2 * 86400)); D4=$((D0 + 3 * 86400)); D5=$((D0 + 4 * 86400))
+FC="$D1 $D2 $D3 $D4"
+P=BIP-T
+{ vv $P 1d $D1 100 100 101; vv $P 1d $D2 110 100.5 105; vv $P 1d $D3 90 102 95; vv $P 1d $D4 95 98 98; vv $P 1d $D5 200 1 2 0
+  ii $P 1d $D1 105 null null null null null; ii $P 1d $D2 105 null 100 104 2 0; ii $P 1d $D2 999 null 100 104 2 0 ha
+  ii $P 1d $D3 95 100 97 101 1 -1; ii $P 1d $D4 94 99 96 100 1 -1; ii $P 1d $D5 1 1 1 1 1 1
+  ff $P 0 120; ff $P 0.5 100; ff $P 1 80; } > "$T/v1.txt"
+awk -v orden="$P" -v desde=$D0 -v salida=tsv -f "$AVIS" "$T/v1.txt" > "$T/v1.out" 2> "$T/v1.err"
+cat > "$T/v1.esp" <<EOF
+1d${TAB}$D2${TAB}ema100${TAB}$P${TAB}1${TAB}110${TAB}105${TAB}📈 Perpetuo, diaria del 02/01: cierra por encima de la EMA 100: cierre 110, EMA 105
+1d${TAB}$D2${TAB}fib${TAB}$P${TAB}1${TAB}110${TAB}100${TAB}📐 Perpetuo, diaria del 02/01: recupera el 50 % (100) de Fibonacci (ciclo 80 → 120); cierre 110
+1d${TAB}$D3${TAB}canal${TAB}$P${TAB}-1${TAB}90${TAB}98${TAB}📉 Perpetuo, diaria del 03/01: rompe el canal de regresión hacia abajo: cierre 90, borde inferior 98
+1d${TAB}$D3${TAB}ema100${TAB}$P${TAB}-1${TAB}90${TAB}95${TAB}📉 Perpetuo, diaria del 03/01: cierra por debajo de la EMA 100: cierre 90, EMA 95
+1d${TAB}$D3${TAB}fib${TAB}$P${TAB}-1${TAB}90${TAB}100${TAB}📐 Perpetuo, diaria del 03/01: pierde el 50 % (100) de Fibonacci (ciclo 80 → 120); cierre 90
+1d${TAB}$D3${TAB}ha${TAB}$P${TAB}-1${TAB}90${TAB}95${TAB}🔴 Perpetuo, diaria del 03/01: la vela Heikin Ashi pasa a roja
+1d${TAB}$D4${TAB}ema100${TAB}$P${TAB}1${TAB}95${TAB}94${TAB}📈 Perpetuo, diaria del 04/01: cierra por encima de la EMA 100: cierre 95, EMA 94
+EOF
+if cmp -s "$T/v1.out" "$T/v1.esp"; then pasa "V1 cada señal en su vela, con su sentido y su texto (EMA, canal con su borde, Fibonacci, Heikin Ashi)"
+else falla "V1 señales hechas a mano" "$(diff "$T/v1.esp" "$T/v1.out" | head -8 | tr '\n' '|')"; fi
+igual "V1 resumen: 7 señales en 4 velas candidatas (la abierta no cuenta)" "RESUMEN_AV senales=7 candidatas=4" "$(cat "$T/v1.err")"
+# Lo que no da señal: la EMA 200 sin dato en la vela anterior, el cruce entre EMA
+# sin cambio, la ruptura que sigue (-1 tras -1), el Heikin Ashi sin color (se
+# compara con la ultima que lo tuvo) y la base "ha" (999) que no se mira.
+igual "V1 ...y nada de lo que no es señal" "0" "$(grep -c -E 'ema200|emas|verde|04/01: rompe' "$T/v1.out")"
+# Cerrar justo en el nivel es estar debajo: de 100 (en el nivel) a 110 cruza; de 105 a 100, tambien.
+{ vv $P 1d $D1 105 1 2; vv $P 1d $D2 100 1 2; vv $P 1d $D3 100 1 2; vv $P 1d $D4 110 1 2
+  for d in $D1 $D2 $D3 $D4; do ii $P 1d $d null null null null null null; done; ff $P 0 120; ff $P 0.5 100; ff $P 1 80; } > "$T/v1b.txt"
+igual "V1 cerrar justo en el nivel cuenta como debajo" "$D2 -1|$D4 1|" \
+  "$(awk -v orden="$P" -v desde=$D0 -v salida=tsv -f "$AVIS" "$T/v1b.txt" 2>/dev/null | awk -F"$TAB" '$3 == "fib" { printf "%s %s|", $2, $5 }')"
+# Varios niveles en una vela: en el orden en que los cruza, y el nivel guardado es el primero.
+{ vv $P 1d $D1 125 1 2; vv $P 1d $D2 75 1 2; vv $P 1d $D3 119 1 2
+  for d in $D1 $D2 $D3; do ii $P 1d $d null null null null null null; done; ff $P 0 120; ff $P 0.5 100; ff $P 1 80; } > "$T/v1c.txt"
+awk -v orden="$P" -v desde=$D0 -v salida=tsv -f "$AVIS" "$T/v1c.txt" > "$T/v1c.out" 2>/dev/null
+igual "V1 bajando cruza de arriba abajo, y los extremos van con su nombre" "120|pierde el máximo del ciclo (120) y el 50 % (100) y el mínimo del ciclo (80) de Fibonacci" \
+  "$(awk -F"$TAB" '$2 == '$D2' { t = $8; sub(/.*: /, "", t); sub(/ \(ciclo.*/, "", t); print $7 "|" t }' "$T/v1c.out")"
+igual "V1 ...y subiendo, de abajo arriba" "80|recupera el mínimo del ciclo (80) y el 50 % (100) de Fibonacci" \
+  "$(awk -F"$TAB" '$2 == '$D3' { t = $8; sub(/.*: /, "", t); sub(/ \(ciclo.*/, "", t); print $7 "|" t }' "$T/v1c.out")"
+# Heikin Ashi verde tras roja; las EMA cruzandose entre si en los dos sentidos.
+{ vv $P 1d $D1 100 101 100; vv $P 1d $D2 100 100 101; vv $P 1d $D3 100 100 101
+  ii $P 1d $D1 50 60 null null null null; ii $P 1d $D2 70 60 null null null null; ii $P 1d $D3 50 60 null null null null; } > "$T/v1d.txt"
+igual "V1 pasa a verde, cruce dorado y cruce de la muerte" \
+  "$D2 emas 1 60 la EMA 100 cruza por encima de la EMA 200 (cruce dorado): EMA 100 70, EMA 200 60|$D2 ha 1 101 la vela Heikin Ashi pasa a verde|$D3 emas -1 60 la EMA 100 cruza por debajo de la EMA 200 (cruce de la muerte): EMA 100 50, EMA 200 60|" \
+  "$(awk -v orden="$P" -v desde=$D0 -v salida=tsv -f "$AVIS" "$T/v1d.txt" 2>/dev/null | awk -F"$TAB" '{ t = $8; sub(/^[^:]*: /, "", t); printf "%s %s %s %s %s|", $2, $3, $5, $7, t }')"
+# Roja, sin color, verde: la de sin color no cambia nada y la verde se compara
+# con la roja (la ultima con color). Y cerrar justo en la EMA es cerrar debajo.
+{ vv $P 1d $D1 100 101 100; vv $P 1d $D2 100 100 100; vv $P 1d $D3 100 100 101
+  ii $P 1d $D1 99 null null null null null; ii $P 1d $D2 100 null null null null null; ii $P 1d $D3 99.5 null null null null null; } > "$T/v1e.txt"
+igual "V1 roja, sin color, verde: pasa a verde en la tercera; cerrar en la EMA es debajo" "$D2 ema100 -1|$D3 ema100 1|$D3 ha 1|" \
+  "$(awk -v orden="$P" -v desde=$D0 -v salida=tsv -f "$AVIS" "$T/v1e.txt" 2>/dev/null | awk -F"$TAB" '{ printf "%s %s %s|", $2, $3, $5 }')"
+# Verde, sin color, verde y roja, sin color, roja: ninguna señal. Y dos sin color
+# seguidas antes de un cambio de verdad: la señal sale en la que cambia.
+hav(){ # hav <ho1 hc1> <ho2 hc2> ... : velas desde D1 con esos Heikin Ashi -> tipos y sentidos
+  d_=$D1; for par in "$@"; do vv $P 1d $d_ 100 ${par% *} ${par#* }; ii $P 1d $d_ null null null null null null; d_=$((d_ + 86400)); done > "$T/v1h.txt"
+  awk -v orden="$P" -v desde=$D0 -v salida=tsv -f "$AVIS" "$T/v1h.txt" 2>/dev/null | awk -F"$TAB" '{ printf "%s %s %s|", $2, $3, $5 }'; }
+igual "V1 verde, sin color, verde: nada" "" "$(hav "100 101" "100 100" "100 101")"
+igual "V1 roja, sin color, roja: nada" "" "$(hav "101 100" "100 100" "101 100")"
+igual "V1 verde, sin color, sin color, roja: pasa a roja en la cuarta" "$D4 ha -1|" "$(hav "100 101" "100 100" "100 100" "101 100")"
+# Cada vela con sus niveles: los de antes de que cerrara. En la del 03/01 el
+# 50 % esta en 105 (con los niveles del 02/01, en 100, 99 -> 103 lo cruzaria) y
+# en la del 04/01 el maximo es 120: cerrar en 125 "supera el maximo del ciclo".
+{ vv $P 1d $D1 100 1 2; vv $P 1d $D2 99 1 2; vv $P 1d $D3 103 1 2; vv $P 1d $D4 125 1 2
+  for d in $D1 $D2 $D3 $D4; do ii $P 1d $d null null null null null null; done
+  for d in $D2 $D4; do fx $P $d 0 120 120; fx $P $d 0.5 100 120; fx $P $d 1 80 120; done
+  fx $P $D3 0 130 130; fx $P $D3 0.5 105 130; fx $P $D3 1 80 130; } > "$T/v1f.txt"
+igual "V1 cada vela con sus niveles; por encima del maximo, supera el maximo del ciclo" \
+  "$D4 fib 1 120 supera el máximo del ciclo (120) de Fibonacci (ciclo 80 → 120); cierre 125|" \
+  "$(awk -v orden="$P" -v desde=$D0 -v salida=tsv -f "$AVIS" "$T/v1f.txt" 2>/dev/null | awk -F"$TAB" '{ t = $8; sub(/^[^:]*: /, "", t); printf "%s %s %s %s %s|", $2, $3, $5, $7, t }')"
+grep -v "${TAB}F${TAB}$D4${TAB}" "$T/v1f.txt" > "$T/v1g.txt"
+igual "V1 la misma vela sin sus niveles (sin ciclo entonces) no da Fibonacci" "" \
+  "$(awk -v orden="$P" -v desde=$D0 -v salida=tsv -f "$AVIS" "$T/v1g.txt" 2>/dev/null | awk -F"$TAB" '{ printf "%s %s|", $2, $3 }')"
+
+# Reparto: el perpetuo (BIP-T) sin EMA semanal ni Fibonacci; el spot si. El
+# perpetuo manda donde tiene el dato aunque no haya señal (EMA diaria, Heikin
+# Ashi), y el spot da la EMA semanal y Fibonacci.
+W1=$D0; W2=$((D0 + 7 * 86400)); W3=$((D0 + 14 * 86400))
+S=BTC-USD
+{ vv $P 1d $D1 90 99 100; vv $P 1d $D2 95 99 100; ii $P 1d $D1 100 null null null null null; ii $P 1d $D2 100 null null null null null
+  vv $P 1w $W1 100 99 100; vv $P 1w $W2 100 99 100; vv $P 1w $W3 100 99 100
+  for w in $W1 $W2 $W3; do ii $P 1w $w null null null null null null; done
+  vv $S 1d $D1 90 99 100; vv $S 1d $D2 110 101 100; ii $S 1d $D1 100 null null null null null; ii $S 1d $D2 100 null null null null null
+  vv $S 1w $W1 100 99 100; vv $S 1w $W2 100 101 100; vv $S 1w $W3 110 99 100
+  ii $S 1w $W1 105 null null null null null; ii $S 1w $W2 105 null null null null null; ii $S 1w $W3 105 null null null null null
+  FC="$D1 $D2 $W2 $W3"; ff $S 0 120; ff $S 0.5 100; ff $S 1 80; FC="$D1 $D2 $D3 $D4"; } > "$T/v2.txt"
+awk -v orden="$P $S" -v desde=$D0 -v salida=tsv -f "$AVIS" "$T/v2.txt" > "$T/v2.out" 2> "$T/v2.err"
+igual "V2 el perpetuo manda donde tiene el dato; el spot da solo lo que al perpetuo le falta" \
+  "1d $D2 fib $S|1w $W3 ema100 $S|1w $W3 fib $S|" "$(awk -F"$TAB" '{ printf "%s %s %s %s|", $1, $2, $3, $4 }' "$T/v2.out")"
+grep -q "Spot, semanal del 15/01: cierra por encima de la EMA 100: cierre 110, EMA 105" "$T/v2.out" \
+  && pasa "V2 ...y el texto dice que es del spot" || falla "V2 el texto dice Spot" "$(cat "$T/v2.out")"
+igual "V2 con el spot primero, manda el spot en todo" "1d $D2 ema100 $S|1d $D2 fib $S|1d $D2 ha $S|1w $W2 ha $S|1w $W3 ema100 $S|1w $W3 fib $S|1w $W3 ha $S|" \
+  "$(awk -v orden="$S $P" -v desde=$D0 -v salida=tsv -f "$AVIS" "$T/v2.txt" 2>/dev/null | awk -F"$TAB" '{ printf "%s %s %s %s|", $1, $2, $3, $4 }')"
+igual "V2 desde deja fuera las velas que cerraron antes" "1w $W3 ema100|1w $W3 fib|" \
+  "$(awk -v orden="$P $S" -v desde=$((W3 + 86400)) -v salida=tsv -f "$AVIS" "$T/v2.txt" 2>/dev/null | awk -F"$TAB" '{ printf "%s %s %s|", $1, $2, $3 }')"
+# El borde: una vela que cierra justo en desde ya no es candidata (las del 02/01
+# cierran el 03/01 a las 00:00).
+igual "V2 una vela que cierra justo en desde queda fuera" "$D3" \
+  "$(awk -v orden="$P" -v desde=$D3 -v salida=tsv -f "$AVIS" "$T/v1.txt" 2>/dev/null | head -1 | cut -f2)"
+
+# Errores: salen con 2 y no dan ninguna señal.
+v3(){ # v3 <fichero> [variables...]
+  f=$1; shift; awk -v orden="${O3:-$P}" -v desde=$D0 "$@" -f "$AVIS" "$f" > "$T/v3.out" 2> "$T/v3.err"; printf '%s/%s' "$?" "$(wc -l < "$T/v3.out" | tr -d ' ')"; }
+grep -v "${TAB}I${TAB}1d${TAB}real${TAB}$D2${TAB}" "$T/v1.txt" > "$T/v3a.txt"
+r=$(v3 "$T/v3a.txt")
+igual "V3 sin la fila de indicadores de una vela: sale con 2 (nunca cae al spot por un hueco)" "2/0 si" "$r $(grep -q 'faltan los indicadores' "$T/v3.err" && echo si)"
+printf '%s\tV\t1d\t1\t2\n' "$P" > "$T/v3b.txt"; r1=$(v3 "$T/v3b.txt")
+printf '%s\tX\t1\n' "$P" > "$T/v3c.txt"; r2=$(v3 "$T/v3c.txt")
+r3=$(O3="OTRO" v3 "$T/v1.txt")
+{ vv $P 1d $D2 1 1 1; vv $P 1d $D1 1 1 1; } > "$T/v3d.txt"; r4=$(v3 "$T/v3d.txt")
+r5=$(awk -v orden="$P" -f "$AVIS" "$T/v1.txt" >/dev/null 2>&1; echo $?)
+r6=$(v3 "$T/v1.txt" -v enviado=5)
+{ ff $P 0.5 100; ff $P 0 120; } > "$T/v3e.txt"; r7=$(v3 "$T/v3e.txt")
+r8=$(O3="BIP-T bad;id" v3 "$T/v1.txt")
+igual "V3 campos de menos, clase rara, producto fuera de orden, velas desordenadas, sin desde, enviado raro, niveles desordenados, producto con caracteres raros: 2" \
+  "2/0 2/0 2/0 2/0 2 2/0 2/0 2/0" "$r1 $r2 $r3 $r4 $r5 $r6 $r7 $r8"
+
+# JSON para rqlite: INSERT OR IGNORE con la clave (marco, ts, tipo); enviado null
+# (pendiente) o 0 (no se manda).
+awk -v orden="$P" -v desde=$D0 -v salida=json -v creado=777 -f "$AVIS" "$T/v1.txt" > "$T/v4.json" 2>/dev/null
+igual "V4 la sentencia, entera" \
+  "[\"INSERT OR IGNORE INTO cripto_aviso(marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES(?,?,?,?,?,?,?,?,?,?)\",\"1d\",$D2,\"ema100\",\"$P\",1,110,105,\"📈 Perpetuo, diaria del 02/01: cierra por encima de la EMA 100: cierre 110, EMA 105\",777,null]" \
+  "$(head -1 "$T/v4.json")"
+igual "V4 con enviado=0, todas van a 0" "7" "$(awk -v orden="$P" -v desde=$D0 -v salida=json -v creado=777 -v enviado=0 -f "$AVIS" "$T/v1.txt" 2>/dev/null | grep -c ',777,0]$')"
+if command -v node >/dev/null 2>&1; then
+  r=$(node -e 'const l = require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean); let ok = 0; for (const x of l) { const a = JSON.parse(x); if (a.length === 11 && !/["\\<>&]/.test(a[8])) ok++; } console.log(ok + "/" + l.length);' "$T/v4.json" 2>&1)
+  igual "V4 JSON valido, 10 valores, y textos sin comillas, barras ni <>&" "7/7" "$r"
+
+  # Series al azar: dos productos (uno con historia corta, para que el reparto
+  # se note), indicadores cortos para que haya muchas señales, y Fibonacci con
+  # un ciclo facil. El awk contra avisos-ref.js, vela a vela.
+  tot=0; malv=0; msgv=""
+  for sem in 11 23 37 41 53 67 79 97; do
+    node -e '
+      let s = +process.argv[1]; const rnd = () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; };
+      for (const [n, f] of [[260, process.argv[2]], [160, process.argv[3]]]) {
+        let p = 60000, out = "";
+        for (let i = 0; i < n; i++) {
+          const t = 1704067200 + (260 - n + i) * 86400, o = p; p = Math.max(1000, Math.round(p * (1 + (rnd() - 0.5) * 0.12)));
+          out += [t, o, Math.max(o, p) + Math.round(rnd() * 900), Math.max(1, Math.min(o, p) - Math.round(rnd() * 900)), p, 1].join(" ") + "\n";
+        }
+        require("fs").writeFileSync(f, out);
+      }' "$sem" "$T/v5s.txt" "$T/v5p.txt"
+    : > "$T/v5.txt"
+    for par in "BTC-USD:$T/v5s.txt" "BIP-T:$T/v5p.txt"; do
+      pr=${par%%:*}; fs=${par#*:}
+      awk -v producto="$pr" -v ahora=$((1704067200 + 259 * 86400 + 3600)) -v desde=0 -v salida=tsv -f "$CALC" "$fs" > "$T/v5v.tsv" 2>/dev/null
+      awk -v producto="$pr" -v desde=0 -v salida=tsv -v ema_a=4 -v ema_b=9 -v bb_n=3 -v rl_n=5 -v rl_k=1 -f "$IND" "$T/v5v.tsv" > "$T/v5i.tsv" 2>/dev/null
+      awk -v p="$pr" '{ print p "\tV\t" $0 }' "$T/v5v.tsv" >> "$T/v5.txt"
+      awk -v p="$pr" '{ print p "\tI\t" $0 }' "$T/v5i.tsv" >> "$T/v5.txt"
+      # Los niveles de cada vela (con las diarias cerradas anteriores), con un
+      # ciclo facil para que haya Fibonacci. Salen de fibonacci-ref.js: el awk de
+      # Fibonacci ya tiene sus pruebas (parte F) y aqui se prueban las señales.
+      node "$AQUI/niveles-por-vela.js" "$T/v5v.tsv" "$pr" 1704067200 caida=0.2 dura=0 >> "$T/v5.txt"
+    done
+    awk -v orden="BIP-T BTC-USD" -v desde=1704067200 -v salida=tsv -f "$AVIS" "$T/v5.txt" > "$T/v5.out" 2>/dev/null
+    r=$(node "$AQUI/avisos-ref.js" "$T/v5.txt" "$T/v5.out" "BIP-T BTC-USD" 1704067200 2>&1)
+    case "$r" in "coincide: "*) n=${r#coincide: }; tot=$((tot + ${n%% *})) ;; *) malv=$((malv + 1)); [ -n "$msgv" ] || msgv="semilla $sem: $r" ;; esac
+  done
+  # Sin variedad la prueba no probaria nada: hacen falta todas las señales, del perpetuo y del spot.
+  if [ "$malv" = 0 ]; then
+    for k in canal ema100 ema200 emas fib ha; do grep -q "${TAB}$k${TAB}" "$T/v5.out" || { malv=1; msgv="la ultima semilla no tiene $k"; }; done
+    grep -q "${TAB}BTC-USD${TAB}" "$T/v5.out" && grep -q "${TAB}BIP-T${TAB}" "$T/v5.out" || { malv=1; msgv="la ultima semilla no reparte"; }
+  fi
+  [ "$malv" = 0 ] && [ "$tot" -gt 500 ] && pasa "V5 8 series al azar contra la referencia: $tot señales, todas iguales" || falla "V5 series al azar contra la referencia" "$malv mal, $tot señales; $msgv"
+fi
+
 # ============================ C. Pasadas reales ===============================
 if ! command -v node >/dev/null 2>&1 || ! command -v rqlited >/dev/null 2>&1; then
   printf 'salto la parte C: hace falta node y rqlited\n'
@@ -350,6 +527,9 @@ else
 fi
 if [ "${libres:-0}" = 1 ]; then
   E="$T/estado.json"
+  # Sin señales salvo donde se pide (AVP), y el bot de prueba (TGC). C38 prueba
+  # los valores por defecto quitando las dos.
+  AVP=""; TGC="$T/tg.conf"
   est(){ printf '%s' "$1" > "$E"; }
   AHORA0=1794506400   # 12/11/2026 18:00 UTC
   INICIO=1672617600   # 02/01/2023, primera vela de la serie falsa
@@ -381,7 +561,7 @@ if [ "${libres:-0}" = 1 ]; then
     # fijos; C16 prueba el spot y el perpetuo juntos (PRODS).
     env HOME="$T/casa" CURL_HOME="$T/casa" SENTINEL_BASE="$T/base" RQLITE="$RQ" RQLITE_CRED="${CRED:-$T/prueba.curlrc}" \
         CB_API="http://127.0.0.1:$PCB" CB_PAUSA=0 CB_ESPERA=0 BTC_DIR="$T/dir" BTC_AHORA="$a" \
-        BTC_PRODUCTOS="${PRODS:-BTC-USD}" BTC_LOTE="${LOTE_P:-200}" sh "$SCRIPT" "$@" > "$T/salida" 2>&1
+        BTC_PRODUCTOS="${PRODS:-BTC-USD}" BTC_LOTE="${LOTE_P:-200}" ${AVP+"BTC_AVISOS=$AVP"} ${TGC+"BTC_TG_CONF=$TGC"} BTC_TG_API="http://127.0.0.1:$PCB" ${AVH:+BTC_AVISO_HORAS=$AVH} sh "$SCRIPT" "$@" > "$T/salida" 2>&1
   }
   comprueba(){ node "$AQUI/comprueba.js" "$RQ" "prueba:clave-prueba" "$E" "${1:-BTC-USD}" 2>&1; }
   sql1(){ curl -q -s -K "$T/prueba.curlrc" -G "$RQ/db/query" --data-urlencode "q=$1" | sed -n 's/.*"values":\[\[\([^]]*\)\]\].*/\1/p'; }
@@ -664,7 +844,7 @@ if [ "${libres:-0}" = 1 ]; then
   rmdir "$T/dir/.velas.lock" 2>/dev/null
 
   # Una copia a medias de btc/ (sin el awk de los indicadores) no escribe nada.
-  mkdir -p "$T/btc2"; cp "$SCRIPT" "$CALC" "$LECTOR" "$FIB" "$T/btc2/"
+  mkdir -p "$T/btc2"; cp "$SCRIPT" "$CALC" "$LECTOR" "$FIB" "$AVIS" "$T/btc2/"
   SCRIPT_BUENO=$SCRIPT; SCRIPT="$T/btc2/Sentinel-BTC-Velas.sh"
   # Otro AHORA: si escribiera algo, MAX(actualizado) de la huella cambiaria.
   antes=$(huella); corre $((AHORA1 + 180)); r=$?; SCRIPT=$SCRIPT_BUENO
@@ -758,6 +938,216 @@ if [ "${libres:-0}" = 1 ]; then
   PRODS="BTC-USD NO-EXISTE" corre $AHORA2; r=$?
   igual "C16 un producto que Coinbase no conoce sale con 1 sin tapar al otro" "1" "$r"
   grep -q '^BTC-USD:' "$T/salida" && pasa "C16 el otro producto se proceso igual" || falla "C16 el otro producto se proceso igual" "$(cat "$T/salida")"
+
+  # ---------------- Señales (paso 7) ----------------
+  igual "C27 sin BTC_AVISOS no se crea la tabla de señales" "0" "$(sql1 "SELECT COUNT(*) FROM sqlite_master WHERE name='cripto_aviso'")"
+  # tg n|ok|txt|meta: el Telegram falso (intentos, aceptados, ultimo texto, y
+  # token|chat|metodo|cabecera Authorization del ultimo).
+  tg(){ curl -q -s "http://127.0.0.1:$PCB/_telegram" | node -e 'let s = ""; process.stdin.on("data", d => { s += d; }).on("end", () => {
+      const a = JSON.parse(s), m = process.argv[1], u = a[a.length - 1] || {};
+      if (m === "n") console.log(a.length); else if (m === "ok") console.log(a.filter(x => x.ok).length);
+      else if (m === "txt") console.log(u.texto || ""); else console.log([u.token, u.chat, u.metodo, u.auth].join("|")); });' "$1"; }
+  # msge <enviado>: el mensaje que deberia haber salido con las señales marcadas
+  # con esa hora, rehecho desde rqlite (cabecera, una linea por señal en orden,
+  # la nota del spot si alguna es del spot, y quien lo manda).
+  msge(){ node -e '
+      const [rq, env] = process.argv.slice(1);
+      fetch(rq + "/db/query?level=strong", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Basic " + Buffer.from("prueba:clave-prueba").toString("base64") },
+        body: JSON.stringify([["SELECT texto, producto FROM cripto_aviso WHERE enviado=? ORDER BY ts,marco,tipo", +env], ["SELECT fuente FROM cripto_vela LIMIT 1"]]) })
+        .then(r => r.json()).then(j => { const f = j.results[0].values || [];
+          let m = "📊 BTC: señales al cierre\n" + f.map(x => "• " + x[0]).join("\n") + "\n";
+          if (f.some(x => x[1] === "BTC-USD")) m += "Spot = BTC-USD, solo donde al perpetuo le falta historia.\n";
+          console.log(m + "Lo manda " + j.results[1].values[0][0] + "."); });' "$RQ" "$1"; }
+  AV2="BIP-20DEC30-CDE BTC-USD"
+  avc(){ node "$AQUI/avisos-comprueba.js" "$RQ" "prueba:clave-prueba" "$E" "$AV2" 2>&1; }
+  pend(){ sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE enviado IS NULL"; }
+  vigia(){ sql1 "SELECT ts, pendientes FROM sentinel_vigia WHERE clave='btc-senales'"; }
+  # Entradas de Raft aplicadas por el rqlite de prueba (para ver cuanto escribe una pasada).
+  raft(){ curl -q -s -K "$T/prueba.curlrc" "$RQ/status" | grep -o '"applied_index":[0-9]*' | head -1 | cut -d: -f2; }
+  ejecuta '[["DROP TABLE IF EXISTS cripto_vela"],["DROP TABLE IF EXISTS cripto_indicador"],["DROP TABLE IF EXISTS cripto_fibonacci"],["DROP TABLE IF EXISTS cripto_aviso"],["DROP TABLE IF EXISTS sentinel_vigia"]]'
+  printf 'BOT_TOKEN="tok-prueba"\nCHAT_ID="42"\n' > "$T/tg.conf"
+  # Parejas de dias forzados: un cierre muy bajo y, al dia siguiente, uno muy
+  # alto, en el perpetuo y en el spot. Dan seguro señales en cada pasada nueva:
+  # EMA, canal y Heikin Ashi del perpetuo, y Fibonacci del spot (con un maximo
+  # de 200.000 en DIAF tiene ciclo; el perpetuo no tiene ninguno).
+  H3=$(( (AHORA2 / 86400) * 86400 + 10 * 86400 )); AHORA3=$((H3 + 36000))
+  bajo(){ printf '"%s":{"c":1000,"l":1000}' "$1"; }; alto(){ printf '"%s":{"c":%s,"h":%s}' "$1" "$2" "$2"; }
+  pares(){ printf '%s,%s,%s,%s,%s,%s' "$(bajo $((H3 - 3 * 86400)))" "$(alto $((H3 - 2 * 86400)) $1)" "$(bajo $H3)" "$(alto $((H3 + 86400)) $1)" \
+             "$(bajo $((H3 + 3 * 86400)))" "$(alto $((H3 + 4 * 86400)) $1)"; }
+  # El ultimo dia alto del spot cierra por ENCIMA del maximo (200.000): con los
+  # niveles de antes de esa vela, "supera el maximo del ciclo". Si se calcularan
+  # con la propia vela (maximo 250.000) saldria otra cosa, y la referencia lo ve.
+  CAM="\"cambiar\":{\"$DIAF\":{\"h\":200000}},\"cambiarEn\":{\"BIP-20DEC30-CDE\":{$(pares 1000000)},\"BTC-USD\":{$(pares 190000 | sed "s/\"$((H3 + 4 * 86400))\":{\"c\":190000,\"h\":190000}/\"$((H3 + 4 * 86400))\":{\"c\":240000,\"h\":250000}/")}}"
+  AVP="$AV2"; PRODS="$AV2"
+  # La primera pasada con un producto que falla no calcula señales: tampoco crea
+  # la tabla, y la siguiente sigue siendo "la primera" (no manda nada viejo).
+  est "{\"ahora\":$((AHORA3 - 600)),$CAM,\"fallaProducto\":\"BIP-20DEC30-CDE\"}"
+  corre $((AHORA3 - 600)); r=$?
+  igual "C27 si la primera pasada no calcula señales (un producto falla), no crea la tabla y sale con 3" "3|0" \
+    "$r|$(sql1 "SELECT COUNT(*) FROM sqlite_master WHERE name='cripto_aviso'")"
+  igual "C27 ...y apunta en sentinel_vigia que las señales no salen (3), para el Wheel" "$((AHORA3 - 600)),3" "$(vigia)"
+  est "{\"ahora\":$AHORA3,$CAM}"
+  t0=$(tg n); corre $AHORA3; r=$?
+  igual "C27 la siguiente: sale bien y crea la tabla" "0 si" "$r $(grep -q 'creada la tabla cripto_aviso' "$T/salida" && echo si)"
+  n=$(sql1 "SELECT COUNT(*) FROM cripto_aviso")
+  igual "C27 ...guarda las de los ultimos 7 dias como ya enviadas, sin mandar nada (y el log da la cuenta justa)" "si|0|$n|si" \
+    "$([ "${n:-0}" -gt 0 ] && echo si)|$(( $(tg n) - t0 ))|$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE enviado=0")|$(grep -q "señales: $n guardadas sin mandar (la tabla es nueva" "$T/salida" && echo si)"
+  c=$(avc); case "$c" in "coincide: "*) pasa "C27 ...y son las de la referencia ($c)" ;; *) falla "C27 señales contra la referencia" "$c" ;; esac
+  igual "C27 ...hay Fibonacci del spot (el perpetuo no tiene ciclo)" "si" "$([ "$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE tipo='fib' AND producto='BTC-USD'")" -gt 0 ] && echo si)"
+  igual "C27 ...y el estado vuelve a bien desde esta pasada" "$AHORA3,0" "$(vigia)"
+
+  AHORA4=$((AHORA3 + 2 * 86400)); est "{\"ahora\":$AHORA4,$CAM}"
+  t0=$(tg n); corre $AHORA4; r=$?
+  m=$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE enviado=$AHORA4")
+  igual "C28 dos dias despues: señales nuevas, mandadas en UN mensaje y marcadas con la hora" "0|1|si|0" \
+    "$r|$(( $(tg n) - t0 ))|$([ "${m:-0}" -gt 0 ] && echo si)|$(pend)"
+  igual "C28 ...el mensaje, entero: cabecera, cada señal en orden, la nota del spot y quien lo manda" "$(msge $AHORA4)" "$(tg txt)"
+  igual "C28 ...y entre ellas hay del spot (Fibonacci), con su nota" "si si" \
+    "$([ "$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE enviado=$AHORA4 AND producto='BTC-USD' AND tipo='fib'")" -gt 0 ] && echo si) $(tg txt | grep -q '^Spot = BTC-USD' && echo si)"
+  igual "C28 ...con el token y el chat del fichero, por POST y sin la clave de rqlite" "tok-prueba|42|POST|false" "$(tg meta)"
+  grep -q "señales: mandadas $m por Telegram" "$T/salida" && pasa "C28 ...y el log lo dice" || falla "C28 el log lo dice" "$(cat "$T/salida")"
+  c=$(avc); case "$c" in "coincide: "*) pasa "C28 ...y son las de la referencia ($c)" ;; *) falla "C28 señales contra la referencia" "$c" ;; esac
+  igual "C28 el token del bot no sale ni en la salida ni en el log" "0 0" "$(grep -c tok-prueba "$T/salida") $(grep -c tok-prueba "$T/dir/velas.log")"
+  # Ni en la linea de comandos de curl (se veria en ps): un curl envoltorio apunta
+  # los argumentos de cada llamada y llama al de verdad.
+  mkdir -p "$T/envuelto"; CURL_REAL=$(command -v curl)
+  printf '#!/bin/sh\nprintf "%%s\\n" "$*" >> "%s/argv.log"\nexec "%s" "$@"\n' "$T" "$CURL_REAL" > "$T/envuelto/curl"; chmod +x "$T/envuelto/curl"
+  : > "$T/argv.log"; ejecuta "[[\"UPDATE cripto_aviso SET enviado=NULL WHERE enviado=$AHORA4\"]]"
+  PATH_BUENO=$PATH; PATH="$T/envuelto:$PATH"; t0=$(tg n); corre $((AHORA4 + 60)); r=$?; PATH=$PATH_BUENO
+  igual "C28 ...ni en los argumentos de curl (y el envoltorio de verdad se uso)" "0|1|0|si" \
+    "$r|$(( $(tg n) - t0 ))|$(grep -c tok-prueba "$T/argv.log")|$(grep -q 'sendMessage\|data-urlencode' "$T/argv.log" && echo si)"
+
+  n0=$(sql1 "SELECT COUNT(*) FROM cripto_aviso"); t0=$(tg n); i0=$(raft); corre $((AHORA4 + 300)); r=$?; i1=$(raft)
+  igual "C29 otra pasada el mismo dia: ni señales nuevas ni mensaje" "0|$n0|0" "$r|$(sql1 "SELECT COUNT(*) FROM cripto_aviso")|$(( $(tg n) - t0 ))"
+  # Sin nada nuevo, las señales no escriben en Raft (ni INSERT para nada ni el
+  # estado, que no cambia): solo las velas y Fibonacci, 2 por producto.
+  igual "C29 ...y escribe solo lo de las velas: 4 entradas de Raft" "4" "$((i1 - i0))"
+  igual "C29 ...el estado de las señales sigue el de antes (no se reescribe)" "$AHORA3,0" "$(vigia)"
+
+  AHORA5=$((AHORA3 + 5 * 86400)); est "{\"ahora\":$AHORA5,$CAM,\"tgFalla\":true}"
+  t0=$(tg n); k0=$(tg ok); corre $AHORA5; r=$?
+  p=$(pend)
+  igual "C30 Telegram falla: sale con 1, lo intenta una vez y las señales siguen pendientes" "1|1|0|si" \
+    "$r|$(( $(tg n) - t0 ))|$(( $(tg ok) - k0 ))|$([ "${p:-0}" -gt 0 ] && echo si)"
+  grep -q 'Telegram no acepto las señales (Telegram respondio http 500); siguen pendientes' "$T/salida" && pasa "C30 ...y lo explica" || falla "C30 lo explica" "$(cat "$T/salida")"
+  igual "C30 ...y apunta en sentinel_vigia que las señales fallan desde ahora (para el Wheel)" "$AHORA5,1" "$(vigia)"
+  corre $((AHORA5 + 120)); r=$?
+  igual "C30 otra pasada fallando: no reescribe el estado (sigue el desde de antes)" "1|$AHORA5,1" "$r|$(vigia)"
+  est "{\"ahora\":$AHORA5,$CAM}"
+  t0=$(tg n); corre $((AHORA5 + 300)); r=$?
+  igual "C30 la pasada siguiente las manda y quedan marcadas" "0|1|0|$p" "$r|$(( $(tg n) - t0 ))|$(pend)|$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE enviado=$((AHORA5 + 300))")"
+  igual "C30 ...y el estado vuelve a bien" "$((AHORA5 + 300)),0" "$(vigia)"
+  c=$(avc); case "$c" in "coincide: "*) pasa "C30 ...y son las de la referencia ($c)" ;; *) falla "C30 señales contra la referencia" "$c" ;; esac
+  igual "C30 ...entre ellas, el spot que supera el maximo del ciclo (los niveles de antes de esa vela)" "1" \
+    "$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE ts=$((H3 + 4 * 86400)) AND marco='1d' AND tipo='fib' AND texto LIKE '%supera%el máximo del ciclo (200.000)%'")"
+
+  # Pendientes viejas (la vela cerro hace mas de BTC_AVISO_HORAS): caducan (-1)
+  # sin mandarlas. Con un plazo mayor, si se mandan.
+  ejecuta "[[\"UPDATE cripto_aviso SET enviado=NULL WHERE ts = $((H3 - 2 * 86400)) AND marco='1d'\"]]"
+  v=$(pend); t0=$(tg n); c0=$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE enviado=-1"); corre $((AHORA5 + 600)); r=$?
+  igual "C31 pendientes de velas cerradas hace mas de 36 h: no se mandan y caducan (-1)" "0|si|0|0|$v" \
+    "$r|$([ "${v:-0}" -gt 0 ] && echo si)|$(( $(tg n) - t0 ))|$(pend)|$(( $(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE enviado=-1") - c0 ))"
+  grep -q "$v de hace mas de 36 h, marcadas sin mandar" "$T/salida" && pasa "C31 ...y el log lo dice" || falla "C31 el log lo dice" "$(cat "$T/salida")"
+  ejecuta "[[\"UPDATE cripto_aviso SET enviado=NULL WHERE ts = $((H3 - 2 * 86400)) AND marco='1d'\"]]"
+  t0=$(tg n); AVH=1000; corre $((AHORA5 + 900)); r=$?; unset AVH
+  igual "C31 con BTC_AVISO_HORAS=1000, esas mismas se mandan" "0|1|0" "$r|$(( $(tg n) - t0 ))|$(pend)"
+  # El borde de las 36 h, contra el CIERRE de la vela (no su inicio), diaria y
+  # semanal: cerrada hace 35 h se manda; hace 37 h, no.
+  A=$((AHORA5 + 930))
+  bd=$(awk -v a=$A 'BEGIN { split("1d 1d 1w 1w", m, " "); split("35 37 35 37", h, " ")
+         for (k = 1; k <= 4; k++) { d = (m[k] == "1d") ? 86400 : 604800
+           printf "%s[\"INSERT INTO cripto_aviso(marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES(?,?,?,?,?,?,?,?,?,?)\",\"%s\",%d,\"borde\",\"BTC-USD\",1,1,1,\"borde %s %s h\",%d,null]", (k > 1 ? "," : "["), m[k], a - d - h[k] * 3600, m[k], h[k], a }
+         print "]" }')
+  ejecuta "$bd"; t0=$(tg n); corre $A; r=$?
+  igual "C31 el borde de las 36 h: diaria y semanal cerradas hace 35 h se mandan; hace 37 h caducan" "0|1|• borde 1w 35 h|• borde 1d 35 h|2,2" \
+    "$r|$(( $(tg n) - t0 ))|$(tg txt | sed -n 2p)|$(tg txt | sed -n 3p)|$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE tipo='borde' AND texto LIKE '% 35 h' AND enviado=$A"),$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE tipo='borde' AND texto LIKE '% 37 h' AND enviado=-1")"
+  ejecuta '[["DELETE FROM cripto_aviso WHERE tipo='"'"'borde'"'"'"]]'
+  # Un mensaje lleva 25 como mucho (Telegram corta en 4096 caracteres): el resto,
+  # en las pasadas siguientes. Con 30 señales de prueba (semanas que cerraron
+  # hace unos minutos), que luego se borran.
+  sp=$(awk -v a=$AHORA5 'BEGIN { for (k = 1; k <= 30; k++) printf "%s[\"INSERT INTO cripto_aviso(marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES(?,?,?,?,?,?,?,?,?,?)\",\"1w\",%d,\"prueba\",\"BTC-USD\",1,1,1,\"señal de prueba %d\",%d,null]", (k > 1 ? "," : "["), a - 604800 - k * 60, k, a; print "]" }')
+  ejecuta "$sp"; tot=$(pend)
+  if [ "${tot:-0}" = 30 ]; then
+    t0=$(tg n); AVH=1000; corre $((AHORA5 + 950)); r=$?
+    igual "C31 con 30 pendientes: un mensaje de 25, en orden, y 5 para la pasada siguiente" "0|1|25|si|5|si" \
+      "$r|$(( $(tg n) - t0 ))|$(tg txt | grep -c '^• ')|$(tg txt | sed -n 2p | grep -qx '• señal de prueba 30' && echo si)|$(pend)|$(grep -q "mandadas 25 por Telegram; 5 para la proxima pasada" "$T/salida" && echo si)"
+    corre $((AHORA5 + 960)); r=$?
+    igual "C31 ...y la siguiente manda las 5 que faltan" "0|5|0" "$r|$(tg txt | grep -c '^• ')|$(pend)"
+    unset AVH
+  else falla "C31 no entraron las 30 señales de prueba" "${tot:-?}"; fi
+  ejecuta '[["DELETE FROM cripto_aviso WHERE tipo='"'"'prueba'"'"'"]]'
+
+  # Una pendiente reciente para las pruebas que siguen.
+  ULT=$(sql1 "SELECT MAX(ts) FROM cripto_aviso WHERE marco='1d'")
+  reciente(){ ejecuta "[[\"UPDATE cripto_aviso SET enviado=NULL WHERE marco='1d' AND ts=$ULT\"]]"; }
+  reciente; p=$(pend); t0=$(tg n); TGC="$T/no-existe"; corre $((AHORA5 + 1200)); r=$?; TGC="$T/tg.conf"
+  igual "C32 sin el fichero del bot: sale con 1, no intenta nada y siguen pendientes" "1|0|$p|si" \
+    "$r|$(( $(tg n) - t0 ))|$(pend)|$(grep -q 'no hay BOT_TOKEN y CHAT_ID en' "$T/salida" && echo si)"
+  printf 'BOT_TOKEN=\nCHAT_ID="42"\n' > "$T/tg-vacio.conf"; TGC="$T/tg-vacio.conf"; corre $((AHORA5 + 1210)); r=$?; TGC="$T/tg.conf"
+  igual "C32 ...ni con el token vacio" "1|0|$p" "$r|$(( $(tg n) - t0 ))|$(pend)"
+
+  est "{\"ahora\":$AHORA5,$CAM,\"fallaProducto\":\"BIP-20DEC30-CDE\"}"
+  t0=$(tg n); n0=$(sql1 "SELECT COUNT(*) FROM cripto_aviso"); corre $((AHORA5 + 1500)); r=$?
+  igual "C33 si el perpetuo falla: sale con 3, no calcula señales y manda las pendientes" "3|$n0|1|0|si" \
+    "$r|$(sql1 "SELECT COUNT(*) FROM cripto_aviso")|$(( $(tg n) - t0 ))|$(pend)|$(grep -q 'no se calculan en esta pasada porque BIP-20DEC30-CDE no salio bien' "$T/salida" && echo si)"
+  # Venia fallando con 1 (C32, sin credenciales): el codigo cambia a 3, y el
+  # "desde" se conserva (el Wheel no vuelve a esperar sus 15 min).
+  igual "C33 ...y el estado pasa de 1 a 3 conservando desde cuando falla" "$((AHORA5 + 1200)),3" "$(vigia)"
+  est "{\"ahora\":$AHORA5,$CAM}"
+
+  reciente; p=$(pend); t0=$(tg n); n0=$(sql1 "SELECT COUNT(*) FROM cripto_aviso"); rm -rf "$T/dir/seco"; corre $((AHORA5 + 1800)) --seco; r=$?
+  igual "C34 --seco: calcula y deja las señales en seco/, sin escribir ni mandar" "0|si si|$n0|0|$p" \
+    "$r|$([ -s "$T/dir/seco/senales.json" ] && echo si) $([ -s "$T/dir/seco/senales.corriente" ] && echo si)|$(sql1 "SELECT COUNT(*) FROM cripto_aviso")|$(( $(tg n) - t0 ))|$(pend)"
+
+  # Telegram acepta pero rqlite no deja marcarlas: sale con 1 y la pasada
+  # siguiente las vuelve a mandar (mejor repetida que perdida).
+  ejecuta '[["CREATE TRIGGER no_marca BEFORE UPDATE ON cripto_aviso BEGIN SELECT RAISE(ABORT, '"'"'falla a proposito'"'"'); END"]]'
+  t0=$(tg n); corre $((AHORA5 + 2100)); r=$?
+  igual "C35 mandadas pero sin poder marcarlas: sale con 1 y siguen pendientes" "1|1|$p|si" \
+    "$r|$(( $(tg n) - t0 ))|$(pend)|$(grep -q 'no pude marcarlas' "$T/salida" && echo si)"
+  ejecuta '[["DROP TRIGGER no_marca"]]'
+  t0=$(tg n); corre $((AHORA5 + 2400)); r=$?
+  igual "C35 ...la siguiente las repite y las marca" "0|1|0" "$r|$(( $(tg n) - t0 ))|$(pend)"
+
+  # Configuracion que no vale: 64, sin tocar nada; la de los productos, en el log.
+  r1=$(PRODS=BTC-USD; corre $((AHORA5 + 2700)); echo $?)
+  l1=$(grep -c 'ERROR BTC_AVISOS: BIP-20DEC30-CDE no esta en BTC_PRODUCTOS' "$T/dir/velas.log")
+  r2=$(AVH=0; corre $((AHORA5 + 2700)); echo $?)
+  r3=$(AVH=abc; corre $((AHORA5 + 2700)); echo $?)
+  igual "C36 BTC_AVISOS con un producto que no esta en BTC_PRODUCTOS (dicho en velas.log), o BTC_AVISO_HORAS 0 o raro: 64" "64 1 64 64" "$r1 $l1 $r2 $r3"
+
+  # El awk de las señales: sin el, nada; roto, las velas entran igual y sale con 2.
+  rm -f "$T/btc2/"*; cp "$SCRIPT" "$CALC" "$LECTOR" "$FIB" "$IND" "$T/btc2/"
+  SCRIPT_BUENO=$SCRIPT; SCRIPT="$T/btc2/Sentinel-BTC-Velas.sh"
+  antes=$(huella); corre $((AHORA5 + 3000)); r=$?
+  igual "C37 sin avisos-calculo.awk: sale con 1 y no escribe nada" "1|$antes|si" "$r|$(huella)|$(grep -q 'falta .*avisos-calculo.awk' "$T/salida" && echo si)"
+  printf 'BEGIN {\n' > "$T/btc2/avisos-calculo.awk"
+  corre $((AHORA5 + 3300)); r=$?; SCRIPT=$SCRIPT_BUENO
+  igual "C37 con el awk de señales roto: las velas entran, y sale con 2 diciendo por que" "2|si|si|$((AHORA5 + 3300)),2" \
+    "$r|$([ "$(sql1 "SELECT MAX(actualizado) FROM cripto_vela")" = $((AHORA5 + 3300)) ] && echo si)|$(grep -q 'el calculo de las señales fallo: ..*' "$T/salida" && echo si)|$(vigia)"
+
+  # Los valores por defecto, los de 014: BTC_AVISOS y el fichero del bot de
+  # thermal-guard en ~/PRC_Thermal (el HOME de las pasadas es $T/casa).
+  mkdir -p "$T/casa/PRC_Thermal"; printf 'BOT_TOKEN="tok-casa"\nCHAT_ID="77"\n' > "$T/casa/PRC_Thermal/thermal-guard.conf"
+  unset AVP TGC; reciente; t0=$(tg n); corre $((AHORA5 + 3600)); r=$?
+  igual "C38 con los valores por defecto: señales del perpetuo y del spot, y el bot de thermal-guard" "0|1|tok-casa|77|0" \
+    "$r|$(( $(tg n) - t0 ))|$(tg meta | cut -d'|' -f1)|$(tg meta | cut -d'|' -f2)|$(pend)"
+  AVP=""; TGC="$T/tg.conf"
+
+  # El estado se compara con la fila de la base, no con nada local: una fila que
+  # alguien dejo distinta se corrige en la pasada siguiente.
+  AVP="$AV2"; ejecuta '[["UPDATE sentinel_vigia SET ts=123, pendientes=2 WHERE clave='"'"'btc-senales'"'"'"]]'
+  corre $((AHORA5 + 3900)); r=$?
+  igual "C39 una fila btc-senales que no cuadra (2 con todo bien) se corrige en la pasada siguiente" "0|$((AHORA5 + 3900)),0" "$r|$(vigia)"
+  # Señales apagadas (BTC_AVISOS vacio) con la fila en fallo: si la escribio este
+  # equipo, queda a 0 (apagarlas quita su aviso); si otro, no se toca.
+  ejecuta '[["UPDATE sentinel_vigia SET ts=123, pendientes=1 WHERE clave='"'"'btc-senales'"'"'"]]'
+  AVP=""; corre $((AHORA5 + 4200)); r=$?
+  igual "C39 con las señales apagadas, la fila en fallo de este equipo vuelve a 0" "0|$((AHORA5 + 4200)),0" "$r|$(vigia)"
+  ejecuta '[["UPDATE sentinel_vigia SET ts=123, pendientes=1, wheel='"'"'otro-nodo'"'"' WHERE clave='"'"'btc-senales'"'"'"]]'
+  corre $((AHORA5 + 4500)); r=$?
+  igual "C39 ...pero la de otro equipo no la toca" "0|123,1" "$r|$(vigia)"
+  unset PRODS
   fi
 fi
 

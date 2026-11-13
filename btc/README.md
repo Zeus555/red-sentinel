@@ -7,7 +7,12 @@ Lo que hace hoy, todo guardado en el rqlite de la red:
 - **indicadores** sobre esas velas (tabla `cripto_indicador`): EMA 100 y 200,
   Bollinger 20 con 2σ y canal de regresión de 100 velas con sus rupturas;
 - **niveles de Fibonacci** del ciclo (tabla `cripto_fibonacci`): del mínimo
-  de 2022 al ATH de 2025, y se mueven solos cuando llegue el ciclo siguiente.
+  de 2022 al ATH de 2025, y se mueven solos cuando llegue el ciclo siguiente;
+- **señales al cierre** de cada vela, por Telegram (tabla `cripto_aviso`):
+  ruptura del canal, cruces con las EMA y entre ellas, niveles de Fibonacci y
+  cambio de color del Heikin Ashi, del perpetuo en diaria y semanal.
+
+Y si deja de escribir, el Wheel de la red avisa por Telegram (ver «Señales»).
 
 ## Series
 
@@ -43,10 +48,14 @@ Los días recientes coinciden exactos en todas.
 | `indicadores-calculo.awk` | Los indicadores, sobre el cierre real y sobre el Heikin Ashi. |
 | `fibonacci-calculo.awk` | El tramo del ciclo y sus niveles de Fibonacci. |
 | `coinbase-velas.awk` | Lee y valida la respuesta de Coinbase. |
+| `avisos-calculo.awk` | Las señales al cierre de cada vela, con su texto, y de qué serie sale cada una. |
+| `servicio/` | El temporizador y el servicio de systemd de sentinel014 (ver «Dónde corre»). |
 | `pruebas/pruebas-velas.sh` | El banco de pruebas: rqlite local con contraseña más un Coinbase falso, comparado con un cálculo independiente en JavaScript. |
 | `pruebas/indicadores-ref.js` | El cálculo independiente de los indicadores, con otras fórmulas, para las pruebas y para la comprobación con datos reales. |
 | `pruebas/fibonacci-ref.js` | Lo mismo para Fibonacci, buscando el tramo de otra manera. |
 | `pruebas/contra-coinbase.js` | Rehace semanas, Heikin Ashi, indicadores y Fibonacci desde lo guardado (estricto). Además compara lo guardado con otras fuentes de Coinbase: la API Exchange (spot), las velas horarias (perpetuo) y ONE_WEEK. |
+| `pruebas/avisos-ref.js` | El cálculo independiente de las señales (y de sus textos), para el banco. |
+| `pruebas/avisos-comprueba.js` | Rehace las señales desde la serie falsa con las tres referencias y las compara con `cripto_aviso`. |
 
 ## Datos
 
@@ -247,6 +256,121 @@ del Heikin Ashi el tramo sale exactamente igual.
 - Si esa transacción falla, se quedan enteros los niveles de antes, y la pasada
   siguiente lo arregla.
 
+## Señales
+
+Lo pidió el dueño el 13/11/2026: en el perpetuo, diaria y semanal, al cierre de
+la vela. Las calcula `avisos-calculo.awk` en cada pasada (paso 7) y las manda la
+propia pasada de sentinel014 por Telegram, con el bot de thermal-guard
+(`~/PRC_Thermal/thermal-guard.conf`).
+
+| Tipo | Señal |
+|---|---|
+| `canal` | El cierre rompe el canal de regresión de las 100 velas anteriores, hacia arriba o hacia abajo (`rl_ruptura` pasa a 1 o a −1). Mientras sigue fuera no se repite. |
+| `ema100`, `ema200` | El cierre cruza la EMA: la vela anterior cerró a un lado y esta al otro. |
+| `emas` | La EMA 100 cruza la EMA 200: cruce dorado hacia arriba, cruce de la muerte hacia abajo. |
+| `fib` | El cierre cruza uno o más niveles de Fibonacci del ciclo: los que había **antes** de esa vela. Si cruza varios, van en una línea, en el orden en que los cruza. El 0 % es el máximo del ciclo y el 100 %, el mínimo: cerrar por encima del máximo «supera el máximo del ciclo». |
+| `ha` | La vela Heikin Ashi cambia de color: verde si su cierre supera su apertura, roja si queda por debajo. Una vela sin color no cambia nada. |
+
+**Solo velas cerradas.** Una señal compara la última vela cerrada con la
+anterior. La diaria se decide en la pasada de las 00:02:30 UTC; la semanal, en
+la del lunes a la misma hora. Cerrar justo en un nivel cuenta como cerrar por
+debajo.
+
+**Los niveles de Fibonacci de cada vela.** Son los del ciclo calculado con las
+velas diarias cerradas anteriores a ella: las líneas que había en el gráfico al
+abrirse (en la diaria, con todo hasta ayer; en la semanal, hasta el domingo
+anterior). Así un máximo nuevo durante el día (que mueve el tramo) no cambia
+la señal de una vela ya cerrada, ni da señales tardías y contradictorias. Y el
+día que el precio cierre por encima del ATH, eso es «supera el máximo del
+ciclo»; desde la vela siguiente, los niveles son los del tramo nuevo.
+
+**De qué serie.** Del perpetuo, salvo donde le falta el dato. El perpetuo tiene
+~70 semanas, así que la EMA y el canal semanales salen hoy del spot, igual que
+Fibonacci, porque el perpetuo aún no tiene ciclo propio. Se decide por señal,
+marco y vela: si el perpetuo tiene el dato y no hay señal, no se mira el spot.
+Cuando el perpetuo tenga historia, pasa a usar el suyo solo. El mensaje lo dice
+(«Perpetuo, …» o «Spot, …»). Spot y perpetuo van a menos de $25 uno de otro.
+
+**El mensaje.** Uno por pasada, con todas las pendientes (25 como mucho; el
+resto, en la pasada siguiente). Con tres señales reales de estas semanas (en la
+práctica cada una llega el día de su cierre):
+
+```
+📊 BTC: señales al cierre
+• 📉 Spot, semanal del 26/10: cierra por debajo de la EMA 100: cierre 78.231, EMA 78.940
+• 🔴 Perpetuo, diaria del 06/11: la vela Heikin Ashi pasa a roja
+• 📉 Perpetuo, diaria del 10/11: rompe el canal de regresión hacia abajo: cierre 73.710, borde inferior 74.503
+Spot = BTC-USD, solo donde al perpetuo le falta historia.
+Lo manda sentinel014.
+```
+
+**Cuántas.** Con los datos reales de los 60 días hasta el 13/11/2026 habrían
+salido 41: unas 5 por semana, la mayoría cambios de color del Heikin Ashi
+diario.
+
+**Tabla `cripto_aviso`.** Una fila por señal: `marco`, `ts` (de la vela) y
+`tipo` son la clave, así que una señal calculada otra vez en la pasada siguiente
+no se duplica ni se vuelve a mandar. Además lleva `producto` (la serie de la que
+sale), `sentido` (1 arriba, −1 abajo), `precio` (el cierre), `nivel` (lo
+cruzado: la EMA, el borde del canal, el primer nivel de Fibonacci o el cierre
+Heikin Ashi), `texto` (la línea del mensaje), `creado` y `enviado`:
+- `null`: pendiente;
+- la hora a la que Telegram la aceptó;
+- `0`: no se manda. Lo llevan las de los 7 días anteriores a crear la tabla,
+  para que la primera pasada no mande nada viejo. La tabla la crea la primera
+  pasada que calcula señales, en la misma transacción que ellas: si esa pasada
+  falla, la siguiente sigue siendo «la primera»;
+- `-1`: caducada sin mandar. La señal de una vela cerrada hace más de
+  `BTC_AVISO_HORAS` (36) ya no sirve para operar (p. ej. tras días sin
+  Telegram).
+
+**Escrituras.** En cada pasada se recalculan los últimos 7 días, pero solo se
+escriben las señales que no estaban: sin nada nuevo, las señales no añaden
+ninguna entrada de Raft.
+
+**Si algo falla.**
+- **Telegram no acepta el mensaje:** siguen pendientes, la pasada sale con 1 y
+  la siguiente lo reintenta.
+- **Se manda pero no se puede marcar** (rqlite): la pasada siguiente lo repite.
+  Mejor repetida que perdida.
+- **Un producto falla en la pasada:** las señales no se calculan (el reparto
+  entre perpetuo y spot saldría mal), pero las pendientes se mandan igual, y la
+  pasada sale con 3. La siguiente recalcula los últimos 7 días.
+- **El cálculo de las señales falla:** las velas ya entraron y la pasada sale
+  con 2.
+
+En todos esos casos la pasada apunta en `sentinel_vigia` (fila `btc-senales`)
+desde cuándo falla el paso de las señales, con su código, y el Wheel avisa si
+dura más de 15 min (abajo). Compara con la fila (una lectura, sin Raft) y solo
+la escribe si cambia: de bien a mal, de mal a bien, o de un código de fallo a
+otro (sin mover el «desde»). Una fila que alguien dejó distinta se corrige en la
+pasada siguiente. Con las señales apagadas (`BTC_AVISOS=`), una fila en fallo
+que escribió el propio equipo vuelve a 0, para que apagarlas quite el aviso.
+
+**Lo vigila el Wheel** de la red, desde fuera de 014 (`Sentinel-Alert.sh`):
+- `bv:<producto>`, «el monitoreo de BTC no está al día», si:
+  - la pasada lleva más de 15 min (`BTC_DATOS_MAX_MIN`, tres pasadas) sin
+    escribir las velas de ese producto: falla la pasada, su temporizador o 014;
+  - escribe, pero pasados esos 15 min tras la medianoche UTC no hay vela del
+    día: Coinbase no la trae (el producto parado, vencido o renombrado).
+- `bs:senales`, «las señales de BTC no salen», si el paso de las señales lleva
+  fallando más de 15 min (Telegram que no las acepta, el cálculo, rqlite).
+
+Con un recordatorio cada 24 h y otro aviso al volver. No culpa a BTC si la base
+está parada, sin líder o con la réplica del Wheel atrasada: de eso avisa por su
+lado. Un producto que no se escribe desde hace una semana mientras otro sí, se
+da por retirado (se quitó de `BTC_PRODUCTOS`) y deja de mirarse; si no se
+escribe ninguno, se siguen mirando todos, aunque pasen semanas. Al quitar o
+renombrar un producto, el Wheel avisará de él durante esa semana. Con 014 caído
+llegan dos avisos de la misma causa: el del nodo y el de BTC.
+
+**Configuración** (entorno o `sentinel.conf` de 014):
+- `BTC_AVISOS`: productos de las señales, el principal primero. Por defecto,
+  `"BIP-20DEC30-CDE BTC-USD"`; vacío, sin señales.
+- `BTC_AVISO_HORAS`: horas tras el cierre de la vela en que una señal todavía
+  se manda (36).
+- `BTC_TG_CONF`: el fichero del bot.
+
 ## Comprobación con datos reales (12/11/2026, en el rqlite de la red)
 
 **Nuestro cálculo.** La semana y la Heikin Ashi, rehechas desde las diarias
@@ -291,9 +415,11 @@ guardadas, coinciden en todas las filas de las dos series.
 
 ## Pruebas
 
-`btc/pruebas/pruebas-velas.sh`: 196 pruebas, todas pasan, en la laptop (270 s)
-y en sentinel014 con su `sh`, que es dash (87 s; el 13/11/2026). El Coinbase falso
-sirve también un perpetuo con saltos de $5 que empieza un viernes. Cubren:
+`btc/pruebas/pruebas-velas.sh`: 267 pruebas, todas pasan, en sentinel014 con su
+`sh`, que es dash (130 s), y en la laptop (13/11/2026). El Coinbase falso
+sirve también un perpetuo con saltos de $5 que empieza un viernes, y hace de
+Telegram (apunta cada intento, con su token y su chat, y falla si se le pide).
+Cubren:
 - Heikin Ashi y semanas, con números hechos a mano.
 - El lector de Coinbase.
 - Los indicadores:
@@ -329,6 +455,27 @@ sirve también un perpetuo con saltos de $5 que empieza un viernes. Cubren:
   - un `--completo` que falla a mitad pide repetirlo;
   - ventanas vacías;
   - que ninguna petición a Coinbase lleve credenciales.
+- Las señales:
+  - cada una, en los dos sentidos, con su texto, hechas a mano; los bordes
+    (cerrar justo en un nivel o en la EMA, varios niveles en una vela, los
+    extremos del ciclo, Heikin Ashi sin color en todas sus combinaciones, la
+    ruptura que sigue);
+  - cada vela con sus propios niveles de Fibonacci, y «supera el máximo»;
+  - el reparto entre perpetuo y spot, y lo que deja fuera `desde`;
+  - los errores de la entrada (una vela sin su fila de indicadores no cae
+    nunca al spot: sale con 2);
+  - 8 series al azar contra `avisos-ref.js` (unas 3.500 señales);
+  - en las pasadas, comparadas con la referencia de punta a punta (que rehace
+    velas, indicadores y Fibonacci por su lado, también los niveles de cada
+    vela): la primera que crea la tabla y guarda sin mandar (y la que falla
+    antes, que no la crea); las nuevas en un solo mensaje, comparado entero,
+    con las del spot y su nota; sin repetir y sin escribir en Raft si no hay
+    nada nuevo; Telegram que falla; el borde de las 36 h, diaria y semanal; el
+    tope de 25; sin credenciales; un producto que falla; `--seco`; marcar que
+    falla; la configuración que no vale (dicha en el log); el awk que falta o
+    está roto; los valores por defecto de 014; el estado en `sentinel_vigia`,
+    escrito solo al cambiar; y el token, que no sale nunca en la salida, el
+    log ni los argumentos de curl.
 
 Antes de arrancar comprueba que los puertos de prueba están libres, para no
 tocar otro rqlited. Una revisión adversarial (25 agentes) encontró 20 fallos, y
@@ -349,6 +496,19 @@ arreglado. Se estropearon a propósito 46 copias distintas (la regla, los bordes
 las anclas, los niveles, el JSON, el orden de escritura, la transacción y los
 chequeos del script). Las 2 que sobrevivieron a la primera tanda tienen ya su
 prueba: con ellas, las 46 se detectan.
+
+Las señales pasaron por dos rondas de revisión adversarial (cuatro enfoques y
+luego los arreglos), con verificadores que intentaban refutar cada hallazgo.
+La primera encontró que nadie avisaba si las señales dejaban de salir (de ahí
+`bs:senales`), que los niveles de Fibonacci se movían con la vela abierta (de
+ahí los niveles de cada vela) y que el aviso del Wheel se callaba tras una
+semana parado. La segunda, que el estado de las señales se guiaba por un
+fichero local y daba «bien» con un producto caído. Todo lo confirmado está
+arreglado. Se estropearon a propósito 40 copias (12 del awk, 18 del script y 10
+de `Sentinel-Alert.sh`); las 2 que se colaron en la primera tanda (el borde de
+`desde` y los niveles con la propia vela) tienen ya su prueba, y con ellas las
+40 se detectan. El banco de avisos (`Sentinel-Selftest-Avisos.sh`) da 191/191
+en sentinel014.
 
 ## Uso
 
@@ -372,7 +532,9 @@ en 014 y lejos de las 00:00 UTC, no hace daño. Pero un `--completo` o un códig
 con otra `VERSION` de los indicadores, con el temporizador en marcha, hacen que
 las dos se pisen: 014 acaba rehaciendo todo y los indicadores quedan un rato a
 medias. Para probar código nuevo contra la red: parar antes el temporizador o
-desplegarlo primero en 014.
+desplegarlo primero en 014. Además, si la laptop tiene el bot de thermal-guard,
+una pasada que escribe también manda las señales pendientes, a la vez que 014:
+con `BTC_AVISOS=` (vacío) no las calcula ni las manda.
 
 **Credenciales.** Usa `~/.config/rqlite/sentinel.curlrc`, el usuario `sentinel`
 (execute y query). Las peticiones a Coinbase van con `curl -q`, así que nunca
@@ -404,18 +566,19 @@ el líder de rqlite: escribe y lee en local.
 |---|---|
 | `servicio/sentinel-btc-velas.timer` | Una pasada cada 5 min: minutos 2, 7, 12… y segundo 30, en UTC. La de las 00:02:30 cierra la vela de ayer. |
 | `servicio/sentinel-btc-velas.service` | La pasada: `/bin/sh ~/PRC_Sentinel/v2/btc/Sentinel-BTC-Velas.sh`, con `Nice=10` (por debajo de rqlited) y un tope de 20 min. |
-| `~/PRC_Sentinel/v2/btc/` | El script y los cuatro awk. |
+| `~/PRC_Sentinel/v2/btc/` | El script y los cinco awk. |
 | `~/PRC_Sentinel/btc/` | `velas.log` (las últimas 1.000 líneas, unos 2 días) y el cerrojo. Más atrás, en el journal. |
 
-Usa lo que ya hay en 014: `RQLITE=http://127.0.0.1:4001` de su `sentinel.conf`
-y `~/.config/rqlite/sentinel.curlrc`. Una pasada normal tarda ~1,5 s y 0,6 s de
+Usa lo que ya hay en 014: `RQLITE=http://127.0.0.1:4001` de su `sentinel.conf`,
+`~/.config/rqlite/sentinel.curlrc` y, para las señales, el bot de
+`~/PRC_Thermal/thermal-guard.conf`. Una pasada normal tarda ~1,5 s y 0,6 s de
 CPU.
 
 **Instalar o actualizar**, desde Git Bash en la raíz del repo de la laptop (no
 desde PowerShell, que estropea la tubería):
 
 ```sh
-git -c core.autocrlf=false archive HEAD btc/Sentinel-BTC-Velas.sh btc/velas-calculo.awk btc/indicadores-calculo.awk btc/fibonacci-calculo.awk btc/coinbase-velas.awk btc/servicio | ssh sentinel014 'set -e; d=$(mktemp -d); tar -x -C "$d"; systemctl --user stop sentinel-btc-velas.timer sentinel-btc-velas.service 2>/dev/null || true; mkdir -p ~/PRC_Sentinel/v2/btc; cp "$d"/btc/Sentinel-BTC-Velas.sh "$d"/btc/*.awk ~/PRC_Sentinel/v2/btc/; cp "$d"/btc/servicio/sentinel-btc-velas.* ~/.config/systemd/user/; rm -rf "$d"; systemctl --user daemon-reload; systemctl --user enable --now sentinel-btc-velas.timer'
+git -c core.autocrlf=false archive HEAD btc/Sentinel-BTC-Velas.sh btc/velas-calculo.awk btc/indicadores-calculo.awk btc/fibonacci-calculo.awk btc/avisos-calculo.awk btc/coinbase-velas.awk btc/servicio | ssh sentinel014 'set -e; d=$(mktemp -d); tar -x -C "$d"; systemctl --user stop sentinel-btc-velas.timer sentinel-btc-velas.service 2>/dev/null || true; mkdir -p ~/PRC_Sentinel/v2/btc; cp "$d"/btc/Sentinel-BTC-Velas.sh "$d"/btc/*.awk ~/PRC_Sentinel/v2/btc/; cp "$d"/btc/servicio/sentinel-btc-velas.* ~/.config/systemd/user/; rm -rf "$d"; systemctl --user daemon-reload; systemctl --user enable --now sentinel-btc-velas.timer'
 ```
 
 - Si el `git archive` falla, el `set -e` corta antes de parar nada.
@@ -444,17 +607,21 @@ tail ~/PRC_Sentinel/btc/velas.log
 journalctl --user -u sentinel-btc-velas -n 30
 ```
 
-Y desde la laptop, sin entrar en 014: cuántos segundos hace que se escribió la
-vela de hoy. Cada pasada buena la reescribe, así que más de 900 s (3 pasadas)
-quiere decir que algo falla: la pasada, el temporizador o el propio 014.
+Y desde la laptop, sin entrar en 014: cuántos segundos hace que se escribieron
+las velas de cada producto, y el estado de las señales. Cada pasada buena las
+reescribe, así que más de 900 s (3 pasadas) quiere decir que algo falla: la
+pasada, el temporizador o el propio 014. Es lo mismo que mira el Wheel, que
+avisa solo (ver «Señales»).
 
 ```sh
 curl -q -s -K ~/.config/rqlite/lector.curlrc -G http://192.168.0.21:4001/db/query --data-urlencode "q=SELECT producto, strftime('%s','now') - MAX(actualizado) FROM cripto_vela WHERE marco='1d' GROUP BY producto"
+curl -q -s -K ~/.config/rqlite/lector.curlrc -G http://192.168.0.21:4001/db/query --data-urlencode "q=SELECT ts, pendientes FROM sentinel_vigia WHERE clave='btc-senales'"
 ```
 
-Mientras no haya avisos, nadie avisa si se para. Un cerrojo que quedó puesto
-(corte de luz en mitad de una pasada) se libera solo a los 30 min. Saltar una
-pasada por el cerrojo y liberarlo quedan en `velas.log`.
+En la segunda, `pendientes` es el código del paso de las señales (0 = bien) y
+`ts`, desde cuándo. Un cerrojo que quedó puesto (corte de luz en mitad de una
+pasada) se libera solo a los 30 min. Saltar una pasada por el cerrojo y
+liberarlo quedan en `velas.log`.
 
 **`contra-coinbase.js` con el temporizador en marcha.** Lee en cuatro
 peticiones. Si una pasada entra entre ellas, puede dar «no coinciden» en la vela
@@ -463,6 +630,4 @@ repetirlo si eso es lo único que sale.
 
 ## Pendiente
 
-- Avisos. Lo primero, que `Sentinel-Alert.sh` mire la consulta de frescura de
-  arriba (más de 15 min sin escribir la vela de hoy): cubre una pasada que falla,
-  el temporizador parado y 014 caído.
+- Nada por ahora. Lo siguiente lo decide el dueño.

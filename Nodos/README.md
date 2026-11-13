@@ -976,7 +976,10 @@ cada 24 h.
   gracia, así que una sola pasada en seco no los enseña todavía.
 - Banco: `sh Sentinel-Selftest-Avisos.sh` (mejor en sentinel014: ~1 min).
 - Por qué no llegó un aviso: `grep FALLO alert.log` en el Wheel; desde fuera,
-  `SELECT * FROM sentinel_vigia` (hora de la última pasada y `pendientes`).
+  `SELECT clave, ts, wheel, pendientes FROM sentinel_vigia`. Tiene dos filas:
+  `avisos` es la última pasada del Wheel (`ts`), quién era y sus envíos
+  pendientes; `btc-senales` es el estado de las señales de BTC (`ts` = desde
+  cuándo, `wheel` = el equipo de BTC, `pendientes` = su código, 0 = bien).
 
 **Desde fuera: latido a la EC2.** Cubre lo que el Wheel no puede ver desde dentro:
 apagón, internet caído o el Wheel con el cron parado.
@@ -1008,6 +1011,8 @@ apagón, internet caído o el Wheel con el cron parado.
 Velas diarias y semanales de BTC en Coinbase (el perpetuo de futuros
 `BIP-20DEC30-CDE` y el spot `BTC-USD`), con Heikin Ashi, indicadores y Fibonacci,
 en las tablas `cripto_vela`, `cripto_indicador` y `cripto_fibonacci` del rqlite.
+Y señales al cierre de cada vela (`cripto_aviso`), que la propia pasada manda
+por Telegram con el bot de thermal-guard de 014.
 
 - Corre en **sentinel014** con el temporizador de usuario `sentinel-btc-velas`:
   una pasada cada 5 min (minutos 2, 7, 12… y segundo 30, en UTC) desde el
@@ -1016,8 +1021,16 @@ en las tablas `cripto_vela`, `cripto_indicador` y `cripto_fibonacci` del rqlite.
 - Una pasada normal: ~1,5 s y 4 entradas de Raft (~0,8 por minuto en total).
 - Instalar, actualizar, mirar y quitar: [`btc/README.md`](../btc/README.md),
   sección «Dónde corre».
-- Todavía no lo vigila nadie: ni `Sentinel-Alert.sh` ni el latido. El README trae
-  la consulta de frescura que hay que mirar a mano mientras tanto.
+- Lo vigila el Wheel, con `Sentinel-Alert.sh`:
+  - clave `bv:<producto>`, «el monitoreo de BTC no está al día»: lleva más de
+    15 min (`BTC_DATOS_MAX_MIN`) sin escribir las velas, o escribe pero
+    Coinbase no trae la vela del día;
+  - clave `bs:senales`, «las señales de BTC no salen»: la pasada apunta en
+    `sentinel_vigia` (fila `btc-senales`) desde cuándo falla su paso de las
+    señales, y el Wheel avisa a los 15 min.
+
+  No avisa con la base parada, sin líder o con su réplica atrasada, que ya
+  tienen su propio aviso. Detalles en `btc/README.md`, «Señales».
 
 ## Credenciales de Bright Data
 

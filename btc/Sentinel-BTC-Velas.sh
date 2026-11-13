@@ -44,6 +44,19 @@
 #      indicadores (real y Heikin Ashi), en un solo lote por producto. Los
 #      niveles de Fibonacci se rehacen enteros en cada pasada, aparte, en una
 #      sola transaccion.
+#   7. Señales de mercado al cierre de cada vela (avisos-calculo.awk), cuando
+#      TODOS los productos de BTC_AVISOS salieron bien en esta pasada: ruptura
+#      del canal, cruces con la EMA 100 y 200, cruce entre las dos EMA, niveles
+#      de Fibonacci y cambio de color del Heikin Ashi, en diaria y semanal. Del
+#      primer producto de BTC_AVISOS (el perpetuo) y, donde a el le falta el
+#      dato, del siguiente (el spot). Van a la tabla cripto_aviso, sin
+#      duplicados: (marco, ts, tipo) es la clave. Despues se mandan por Telegram
+#      (el bot de thermal-guard) las que estan pendientes, en un solo mensaje, y
+#      se marcan como enviadas. Si Telegram falla, siguen pendientes y la pasada
+#      siguiente lo reintenta; las de una vela cerrada hace mas de
+#      BTC_AVISO_HORAS ya no se mandan (se marcan con -1). Si el paso falla
+#      (Telegram, el calculo, rqlite), lo apunta en sentinel_vigia (fila
+#      btc-senales, solo al pasar de bien a mal o al reves) y el Wheel avisa.
 #
 # Solo usa el endpoint PUBLICO de velas de Coinbase Advanced Trade: sin claves,
 # sin cuenta, sin ordenes. Las peticiones a Coinbase van con `curl -q` para que
@@ -70,17 +83,27 @@
 #                 ~/.config/rqlite/sentinel.curlrc; necesita execute y query)
 #   BTC_PRODUCTOS productos de Coinbase separados por espacio (por defecto
 #                 "BIP-20DEC30-CDE BTC-USD"). Cuando el perpetuo cambie de
-#                 nombre (vence en dic-2030), se cambia aqui o en sentinel.conf.
+#                 nombre (vence en dic-2030), se cambia aqui y en BTC_AVISOS (o en
+#                 sentinel.conf).
 #   BTC_DIR       carpeta del log y del cerrojo (por defecto ~/PRC_Sentinel/btc)
 #   BTC_MARGEN    segundos tras el fin de una vela para darla por cerrada (60)
 #   BTC_NODOS     (en sentinel.conf) unico nodo donde corre; los demas salen
-#   CB_API, CB_PAUSA, CB_ESPERA, BTC_LOTE, BTC_AHORA   solo para pruebas
+#   BTC_AVISOS    productos de las señales, el principal primero (por defecto
+#                 "BIP-20DEC30-CDE BTC-USD"); vacio = sin señales. Tienen que
+#                 estar en BTC_PRODUCTOS.
+#   BTC_AVISO_HORAS  horas tras el cierre de la vela en que una señal todavia se
+#                 manda (36); mas tarde se marca como caducada (-1)
+#   BTC_TG_CONF   fichero con BOT_TOKEN y CHAT_ID (por defecto el de
+#                 thermal-guard, ~/PRC_Thermal/thermal-guard.conf)
+#   CB_API, CB_PAUSA, CB_ESPERA, BTC_LOTE, BTC_AHORA, BTC_TG_API   solo para pruebas
 #
 # Codigos de salida: 0 bien; 1 fallo de red, de Coinbase o de rqlite (se puede
 # reintentar: escribir dos veces la misma vela no cambia nada), o del equipo (no
 # se puede crear la carpeta o el cerrojo, falta un fichero de btc/: eso no se
 # arregla reintentando); 2 datos que no cuadran (no se escribio nada de ese
-# producto); 64 uso incorrecto.
+# producto); 64 uso incorrecto. Las señales tambien cuentan: 1 si no se pudieron
+# guardar o mandar (Telegram), 2 si su calculo fallo, 3 si no se calcularon
+# porque un producto de BTC_AVISOS no salio bien; las velas ya entraron.
 set -u
 # Punto decimal SIEMPRE: con un locale de coma decimal, awk podria escribir
 # "71487,33" y el JSON de la sentencia dejaria de serlo.
@@ -109,10 +132,16 @@ AHORA="${BTC_AHORA:-$(date +%s)}"
 # terminar de agregar la vela tras las 00:00 UTC: una pasada a las 00:00:05 deja
 # la de ayer abierta y la cierra la siguiente, con sus valores definitivos.
 MARGEN="${BTC_MARGEN:-60}"
+# Señales: con BTC_AVISOS vacio (definido pero vacio) no se calculan ni se mandan.
+AVISOS="${BTC_AVISOS-BIP-20DEC30-CDE BTC-USD}"
+AVHORAS="${BTC_AVISO_HORAS:-36}"
+TG_CONF="${BTC_TG_CONF:-$HOME/PRC_Thermal/thermal-guard.conf}"
+TG_API="${BTC_TG_API:-https://api.telegram.org}"
 UA="sentinel-btc-velas/1.0"
 CALC="$AQUI/velas-calculo.awk"
 INDIC="$AQUI/indicadores-calculo.awk"
 FIBO="$AQUI/fibonacci-calculo.awk"
+AVIS="$AQUI/avisos-calculo.awk"
 LECTOR="$AQUI/coinbase-velas.awk"
 DIA=86400
 VENTANA=300          # dias por peticion (Coinbase acepta hasta 350)
@@ -133,7 +162,12 @@ done
 case "$AHORA" in ''|*[!0-9]*) printf 'BTC_AHORA no es un numero\n' >&2; exit 64 ;; esac
 case "$LOTE" in ''|0|*[!0-9]*) printf 'BTC_LOTE no es un numero positivo\n' >&2; exit 64 ;; esac
 case "$MARGEN" in ''|*[!0-9]*) printf 'BTC_MARGEN no es un numero\n' >&2; exit 64 ;; esac
+case "$AVHORAS" in ''|0|*[!0-9]*) printf 'BTC_AVISO_HORAS no es un numero positivo\n' >&2; exit 64 ;; esac
 CORTE=$((AHORA - MARGEN))
+# Velas candidatas a señal: las cerradas en los ultimos 7 dias (hacia atras no
+# hace falta: lo de antes ya se miro en su pasada). Sus indicadores se piden
+# desde 60 dias antes, para tener siempre los de la vela anterior.
+AV_DESDE=$((AHORA - 7 * 86400)); AV_IND=$((AV_DESDE - 60 * 86400))
 
 # Debe correr en UN solo nodo (ver mas abajo, en el cerrojo). Si sentinel.conf
 # trae BTC_NODOS (nombres separados por espacios) y este nodo no esta, no hace
@@ -150,8 +184,15 @@ FUENTE=$(printf '%s' "${NAME:-$(hostname 2>/dev/null)}" | tr -cd 'A-Za-z0-9._-')
 mkdir -p "$DIR" || exit 1
 log(){ printf '%s %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; printf '%s\n' "$1"; }
 
-# Los cuatro awk viajan con el script: sin uno de ellos no se escribe nada.
-for f in "$CALC" "$INDIC" "$FIBO" "$LECTOR"; do
+# Las señales mezclan productos: todos tienen que estar en BTC_PRODUCTOS. Al
+# cambiar el nombre del perpetuo, cambiar los dos. Va al log (lo primero que se
+# mira cuando el Wheel avisa de que el monitoreo no escribe).
+for p in $AVISOS; do
+  case " $PRODUCTOS " in *" $p "*) ;; *) log "ERROR BTC_AVISOS: $p no esta en BTC_PRODUCTOS ($PRODUCTOS); no hago nada"; exit 64 ;; esac
+done
+
+# Los cinco awk viajan con el script: sin uno de ellos no se escribe nada.
+for f in "$CALC" "$INDIC" "$FIBO" "$AVIS" "$LECTOR"; do
   [ -r "$f" ] || { log "ERROR falta $f: hay que copiar la carpeta btc/ entera"; exit 1; }
 done
 
@@ -208,6 +249,8 @@ rq(){
 TABLA='CREATE TABLE IF NOT EXISTS cripto_vela (producto TEXT NOT NULL, marco TEXT NOT NULL, ts INTEGER NOT NULL, apertura REAL NOT NULL, maximo REAL NOT NULL, minimo REAL NOT NULL, cierre REAL NOT NULL, volumen REAL NOT NULL, ha_apertura REAL, ha_maximo REAL, ha_minimo REAL, ha_cierre REAL, cerrada INTEGER NOT NULL, dias INTEGER, fuente TEXT, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, marco, ts)) WITHOUT ROWID'
 
 TABLA_IND='CREATE TABLE IF NOT EXISTS cripto_indicador (producto TEXT NOT NULL, marco TEXT NOT NULL, base TEXT NOT NULL, ts INTEGER NOT NULL, ema100 REAL, ema200 REAL, bb_media REAL, bb_sup REAL, bb_inf REAL, rl_centro REAL, rl_sup REAL, rl_inf REAL, rl_pendiente REAL, rl_r REAL, rl_ruptura INTEGER, cerrada INTEGER NOT NULL, version INTEGER NOT NULL, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, marco, base, ts)) WITHOUT ROWID'
+
+TABLA_AV='CREATE TABLE IF NOT EXISTS cripto_aviso (marco TEXT NOT NULL, ts INTEGER NOT NULL, tipo TEXT NOT NULL, producto TEXT NOT NULL, sentido INTEGER NOT NULL, precio REAL NOT NULL, nivel REAL, texto TEXT NOT NULL, creado INTEGER NOT NULL, enviado INTEGER, PRIMARY KEY (marco, ts, tipo)) WITHOUT ROWID'
 
 TABLA_FIB='CREATE TABLE IF NOT EXISTS cripto_fibonacci (producto TEXT NOT NULL, tramo TEXT NOT NULL, nivel REAL NOT NULL, precio REAL NOT NULL, bajo_ts INTEGER NOT NULL, bajo REAL NOT NULL, alto_ts INTEGER NOT NULL, alto REAL NOT NULL, caida REAL NOT NULL, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, tramo, nivel)) WITHOUT ROWID'
 
@@ -489,7 +532,206 @@ procesa(){
   # pasada, algo no cuadra y esta linea lo deja a la vista.
   [ "$IND_MODO" = completo ] && [ "$DESDE" -gt 0 ] && \
     log "  indicadores de $P reescritos enteros: antes del $(echo "$DESDE" | awk "$FECHA_AWK"' { print fecha($1) }') habia $HAY filas, $GUARD cerradas de la version $VER, y debian ser $PREVIAS"
+  # Para las señales (paso 7): lo de este producto que hace falta, en tsv. Solo
+  # si todo lo anterior salio bien: si no, este fichero .ok no existe y las
+  # señales no se calculan en esta pasada (nunca a medias, con un solo producto).
+  case " $AVISOS " in *" $P "*)
+    { awk -v producto="$P" -v desde="$AV_IND" -v salida=tsv -f "$INDIC" "$TMPD/velas.tsv" > "$TMPD/av.$P.ind" 2>/dev/null \
+      && fib_por_vela "$P" && cp "$TMPD/velas.tsv" "$TMPD/av.$P.velas" && : > "$TMPD/av.$P.ok"; } \
+      || { log "ERROR $P: no pude preparar lo que piden las señales"; return 1; } ;;
+  esac
   return 0
+}
+
+# fib_por_vela <producto>: los niveles de Fibonacci de cada vela candidata a
+# señal (cerrada y que cierra despues de AV_DESDE, diaria o semanal), calculados
+# con las diarias CERRADAS anteriores a ella: las lineas que habia al abrirse
+# (la semanal, con las de hasta el domingo anterior).
+# Asi un maximo nuevo durante el dia no cambia las señales de las velas que ya
+# cerraron. -> $TMPD/av.$P.fib: <ts de la vela> <tsv de fibonacci-calculo.awk>.
+fib_por_vela(){
+  : > "$TMPD/av.$1.fib" || return 1
+  awk -F'\t' -v d="$AV_DESDE" '$12 == 1 && $2 + (($1 == "1d") ? 86400 : 604800) > d { print $2 }' \
+      "$TMPD/velas.tsv" | sort -un > "$TMPD/av.cortes" || return 1
+  while read -r c; do
+    awk -F'\t' -v c="$c" '$1 == "1d" && $12 == 1 && $2 < c' "$TMPD/velas.tsv" > "$TMPD/av.antes" &&
+      awk -v producto="$1" -v salida=tsv -f "$FIBO" "$TMPD/av.antes" > "$TMPD/av.niveles" 2>/dev/null &&
+      awk -v c="$c" '{ print c "\t" $0 }' "$TMPD/av.niveles" >> "$TMPD/av.$1.fib" || return 1
+  done < "$TMPD/av.cortes"
+}
+
+# --- 7. Señales de mercado -------------------------------------------------------
+# guarda_senales: calcula las señales de las velas cerradas en los ultimos 7
+# dias y las guarda con INSERT OR IGNORE: una señal ya guardada no cambia ni se
+# vuelve a mandar. Solo si TODOS los productos de BTC_AVISOS salieron bien en
+# esta pasada; si no, el reparto entre perpetuo y spot saldria mal.
+guarda_senales(){
+  for P in $AVISOS; do
+    # 3: no es un fallo de las señales, pero tampoco salieron. Si dura (las
+    # velas pueden haber entrado y fallar algo despues), el Wheel avisa.
+    [ -e "$TMPD/av.$P.ok" ] || { log "señales: no se calculan en esta pasada porque $P no salio bien; las pendientes se mandan igual"; return 3; }
+  done
+  : > "$TMPD/av.corriente"
+  for P in $AVISOS; do
+    { awk -v p="$P" '{ print p "\tV\t" $0 }' "$TMPD/av.$P.velas" &&
+      awk -v p="$P" '{ print p "\tI\t" $0 }' "$TMPD/av.$P.ind" &&
+      awk -v p="$P" '{ print p "\tF\t" $0 }' "$TMPD/av.$P.fib"; } >> "$TMPD/av.corriente" \
+    || { log "ERROR no pude preparar la entrada de las señales"; return 1; }
+  done
+  # Sin la tabla, esta pasada la crea, en el MISMO lote que las señales, y lo de
+  # los ultimos dias se guarda como ya enviado (0): la primera pasada no manda
+  # señales viejas de golpe. Si el lote falla, tampoco queda la tabla, y la
+  # pasada siguiente vuelve a ser "la primera".
+  ENV0=""; [ "$AV_NUEVA" = 1 ] && ENV0=0
+  if ! awk -v orden="$AVISOS" -v desde="$AV_DESDE" -v salida=json -v creado="$AHORA" -v enviado="$ENV0" \
+         -f "$AVIS" "$TMPD/av.corriente" > "$TMPD/av.txt" 2> "$TMPD/av.err"; then
+    log "ERROR el calculo de las señales fallo: $(error_de "$TMPD/av.err")"; return 2
+  fi
+  AV_N=$(wc -l < "$TMPD/av.txt" | tr -d ' ')
+  if [ "$SECO" = 1 ]; then
+    mkdir -p "$DIR/seco"
+    awk 'BEGIN { printf "[" } { printf "%s%s", (NR > 1 ? "," : ""), $0 } END { print "]" }' "$TMPD/av.txt" > "$DIR/seco/senales.json"
+    cp "$TMPD/av.corriente" "$DIR/seco/senales.corriente"
+    log "señales: $AV_N en las velas cerradas de los ultimos 7 dias (calculadas sin escribir)"
+    return 0
+  fi
+  # Las que ya estan guardadas no se vuelven a mandar a rqlite: un INSERT OR
+  # IGNORE sin nada nuevo seria una escritura de Raft en cada pasada para nada.
+  # Se leen sus claves (lectura, sin Raft); si no se puede, van todas.
+  if [ "$AV_OK" = 1 ] && [ "$AV_N" -gt 0 ]; then
+    printf '[["SELECT marco,ts,tipo FROM cripto_aviso WHERE ts>=?",%s]]' "$((AV_DESDE - 604800))" > "$TMPD/q.json"
+    if rq 'query?level=weak' "$TMPD/q.json"; then
+      awk 'NR == FNR { t = t $0; next }
+           FNR == 1 { if (t ~ /"values":\[\[/) { sub(/.*"values":\[\[/, "", t); sub(/\]\].*$/, "", t)
+                        n = split(t, f, /\],\[/); for (i = 1; i <= n; i++) { gsub(/"/, "", f[i]); ya[f[i]] = 1 } } }
+           { s = $0; sub(/^\["[^"]*",/, "", s); split(s, a, ","); k = a[1] "," a[2] "," a[3]; gsub(/"/, "", k)
+             if (!(k in ya)) print }' "$TMPD/rq.out" "$TMPD/av.txt" > "$TMPD/av.nuevas" \
+        && mv "$TMPD/av.nuevas" "$TMPD/av.txt"
+    fi
+  fi
+  { [ "$AV_NUEVA" = 1 ] && printf '["%s"]\n' "$TABLA_AV"; cat "$TMPD/av.txt"; } \
+  | awk 'BEGIN { printf "[" } { printf "%s%s", (NR > 1 ? "," : ""), $0 } END { print "]" }' > "$TMPD/av.json" \
+    || { log "ERROR no pude preparar el lote de las señales"; return 1; }
+  [ "$(wc -c < "$TMPD/av.json" | tr -d ' ')" -gt 3 ] || return 0      # "[]": nada que escribir
+  rq 'execute?transaction' "$TMPD/av.json" || { log "ERROR fallo al guardar las señales ($ERRMSG); la proxima pasada lo repite"; return 1; }
+  # Cuantas entraron: con la tabla nueva, todas (y el CREATE tambien da un
+  # rows_affected, que no es una señal); si no, las que rqlite dice.
+  if [ "$AV_NUEVA" = 1 ]; then nuevas=$AV_N
+  else nuevas=$(grep -o '"rows_affected":1' "$TMPD/rq.out" | wc -l | tr -d ' '); fi
+  if [ "$AV_NUEVA" = 1 ]; then AV_OK=1; AV_NUEVA=0; log "creada la tabla cripto_aviso en rqlite"; fi
+  if [ "$nuevas" -gt 0 ]; then
+    if [ -n "$ENV0" ]; then log "señales: $nuevas guardadas sin mandar (la tabla es nueva: son de antes)"
+    else log "señales: $nuevas nuevas"; fi
+  fi
+  return 0
+}
+
+# estado_senales <rc del paso 7> [limpiar]: apunta en sentinel_vigia (clave
+# btc-senales) si las señales van bien (0) o fallan (su codigo), con la hora
+# desde la que es asi. Se compara con la propia fila (una lectura, sin Raft) y
+# solo se escribe si no la hay, si pasa de bien a mal o de mal a bien (hora de
+# ahora), o si cambia el codigo de un fallo (conservando desde cuando falla).
+# Asi no hay escrituras de Raft en cada pasada, y una fila que alguien dejo
+# distinta se corrige sola. El Wheel (Sentinel-Alert.sh) avisa si lleva fallando
+# mas de 15 min: que Telegram no acepte las señales, o que no se puedan calcular
+# o guardar, no lo ve nadie mas. Con "limpiar" (señales apagadas, BTC_AVISOS
+# vacio) solo deja a 0 una fila en fallo que escribio este mismo equipo, para
+# que apagarlas quite su aviso; si no, no toca nada.
+estado_senales(){
+  printf '[["SELECT ts, pendientes, wheel FROM sentinel_vigia WHERE clave=?","btc-senales"]]' > "$TMPD/q.json"
+  if rq 'query?level=weak' "$TMPD/q.json"; then
+    fila_=$(sed -n 's/.*"values":\[\[\([0-9]*\),\([0-9]*\),"\([^"]*\)"\]\].*/\1 \2 \3/p' "$TMPD/rq.out")
+  else
+    case "$ERRMSG" in *"no such table"*) fila_="" ;;
+      *) log "AVISO: no pude leer el estado de las señales en sentinel_vigia ($ERRMSG); lo reintento en la proxima pasada"; return 0 ;; esac
+  fi
+  f_ts=$(printf '%s' "$fila_" | cut -d' ' -f1); f_rc=$(printf '%s' "$fila_" | cut -d' ' -f2); f_de=$(printf '%s' "$fila_" | cut -d' ' -f3)
+  if [ "${2:-}" = limpiar ]; then
+    [ -n "$fila_" ] && [ "$f_rc" != 0 ] && [ "$f_de" = "$FUENTE" ] || return 0
+    ts_=$AHORA
+  elif [ -z "$fila_" ]; then ts_=$AHORA
+  elif [ "$f_rc" = 0 ] && [ "$1" = 0 ]; then return 0
+  elif [ "$f_rc" != 0 ] && [ "$1" != 0 ]; then [ "$f_rc" = "$1" ] && return 0; ts_=$f_ts
+  else ts_=$AHORA; fi
+  printf '[["CREATE TABLE IF NOT EXISTS sentinel_vigia (clave TEXT PRIMARY KEY, ts INTEGER NOT NULL, wheel TEXT, pendientes INTEGER)"],["INSERT OR REPLACE INTO sentinel_vigia (clave, ts, wheel, pendientes) VALUES (?, ?, ?, ?)","btc-senales",%s,"%s",%s]]' \
+    "$ts_" "$FUENTE" "$1" > "$TMPD/v.json"
+  rq 'execute?transaction' "$TMPD/v.json" \
+    || log "AVISO: no pude apuntar el estado de las señales en sentinel_vigia ($ERRMSG); lo reintento en la proxima pasada"
+}
+
+# tg_envia <texto>: 0 SOLO si Telegram confirma ("ok":true con 200). El token del
+# bot va en la URL, asi que la URL entra por la entrada (-K -) y no por argv:
+# no se ve en `ps` ni en el journal.
+tg_envia(){
+  TG_TOKEN=""; TG_CHAT=""
+  if [ -r "$TG_CONF" ]; then
+    TG_TOKEN=$(sed -n 's/^BOT_TOKEN=//p' "$TG_CONF" | head -1 | tr -d '"'"'"' \r')
+    TG_CHAT=$(sed -n 's/^CHAT_ID=//p' "$TG_CONF" | head -1 | tr -d '"'"'"' \r')
+  fi
+  if [ -z "$TG_TOKEN" ] || [ -z "$TG_CHAT" ]; then ERRMSG="no hay BOT_TOKEN y CHAT_ID en $TG_CONF"; return 1; fi
+  # El texto va por fichero (text@): en Windows el curl nativo recibe la linea de
+  # comandos en la pagina de codigos del sistema y estropea los acentos y los
+  # emojis; un fichero llega tal cual, en UTF-8. Alli la ruta va en formato
+  # Windows (cygpath), que es lo que entiende ese curl.
+  printf '%s' "$1" > "$TMPD/tg.txt" || { ERRMSG="no pude escribir $TMPD/tg.txt"; return 1; }
+  tf_="$TMPD/tg.txt"; command -v cygpath >/dev/null 2>&1 && tf_=$(cygpath -w "$tf_")
+  tr_=$(printf 'url = "%s/bot%s/sendMessage"\n' "$TG_API" "$TG_TOKEN" \
+        | curl -q -s -m 20 -K - -w '\n%{http_code}' --data-urlencode "chat_id=$TG_CHAT" --data-urlencode "text@$tf_" 2>/dev/null)
+  tc_=$(printf '%s' "$tr_" | tail -n 1)
+  if [ "$tc_" = 200 ]; then case "$tr_" in *'"ok":true'*) return 0 ;; esac; fi
+  ERRMSG="Telegram respondio http ${tc_:-000}"; return 1
+}
+
+# envia_senales: manda las pendientes (enviado null) en un solo mensaje y las
+# marca con la hora. Las de una vela cerrada hace mas de AVHORAS horas se marcan
+# con -1 (caducada) sin mandarlas: ya no sirven para operar (Telegram caido
+# dias, etc.). Mientras tanto, el Wheel ya habra avisado de que no salen.
+envia_senales(){
+  printf '[["SELECT marco,ts,tipo,texto FROM cripto_aviso WHERE enviado IS NULL ORDER BY ts,marco,tipo LIMIT 200"]]' > "$TMPD/q.json"
+  rq 'query?level=weak' "$TMPD/q.json" || { log "ERROR no pude leer las señales pendientes ($ERRMSG)"; return 1; }
+  # Fila: ["1d",1794528000,"fib","texto"]. Los textos no llevan comillas,
+  # barras ni corchetes (avisos-calculo.awk no los usa), asi que el primer "]]"
+  # cierra "values" y "],[" separa filas. Salida: E (se manda), R (se manda en
+  # la pasada siguiente: un mensaje lleva 25 como mucho, por el tope de 4096
+  # caracteres de Telegram) o V (vieja: se marca con -1 sin mandarla).
+  awk -v ahora="$AHORA" -v vig=$((AVHORAS * 3600)) '{ t = t $0 } END {
+      if (t !~ /"values":\[\[/) exit 0
+      sub(/.*"values":\[\[/, "", t); sub(/\]\].*$/, "", t)
+      n = split(t, f, /\],\[/)
+      for (i = 1; i <= n; i++) {
+        r = f[i]; m = substr(r, 2, 2); r = substr(r, 6)
+        ts = substr(r, 1, index(r, ",") - 1); r = substr(r, index(r, ",") + 2)
+        tp = substr(r, 1, index(r, "\"") - 1); x = substr(r, index(r, "\"") + 3); sub(/"$/, "", x)
+        if ((m != "1d" && m != "1w") || ts !~ /^[0-9]+$/ || tp !~ /^[a-z0-9]+$/) continue
+        cierre = ts + ((m == "1d") ? 86400 : 604800)
+        c = (cierre + vig < ahora) ? "V" : ((++ne > 25) ? "R" : "E")
+        printf "%s\t%s\t%s\t%s\t%s\n", c, m, ts, tp, x
+      } }' "$TMPD/rq.out" > "$TMPD/pend.txt" || { log "ERROR no pude leer las señales pendientes"; return 1; }
+  [ -s "$TMPD/pend.txt" ] || return 0
+  NE=$(grep -c '^E' "$TMPD/pend.txt"); NV=$(grep -c '^V' "$TMPD/pend.txt"); NR_=$(grep -c '^R' "$TMPD/pend.txt")
+  er_=0; MANDADAS=0
+  if [ "$NE" -gt 0 ]; then
+    MSG=$(printf '📊 BTC: señales al cierre\n'
+          awk -F'\t' '$1 == "E" { print "• " $5 }' "$TMPD/pend.txt"
+          awk -F'\t' '$1 == "E" && $5 ~ / Spot, / { s = 1 } END { exit !s }' "$TMPD/pend.txt" \
+            && printf 'Spot = BTC-USD, solo donde al perpetuo le falta historia.\n'
+          printf 'Lo manda %s.' "$FUENTE")
+    if tg_envia "$MSG"; then MANDADAS=1
+    else log "AVISO: Telegram no acepto las señales ($ERRMSG); siguen pendientes y se reintenta en la proxima pasada"; er_=1; fi
+  fi
+  awk -F'\t' -v ahora="$AHORA" -v mandadas="$MANDADAS" '
+      ($1 == "E" && mandadas) || $1 == "V" {
+        printf "%s[\"UPDATE cripto_aviso SET enviado=? WHERE marco=? AND ts=? AND tipo=? AND enviado IS NULL\",%d,\"%s\",%s,\"%s\"]", \
+          (n++ ? "," : "["), ($1 == "E") ? ahora : -1, $2, $3, $4 }
+      END { if (n) print "]" }' "$TMPD/pend.txt" > "$TMPD/marca.json"
+  if [ -s "$TMPD/marca.json" ]; then
+    rq 'execute?transaction' "$TMPD/marca.json" || {
+      log "ERROR señales: no pude marcarlas ($ERRMSG); las ya mandadas se repetiran en la proxima pasada"; return 1; }
+  fi
+  if [ "$MANDADAS" = 1 ] || [ "$NV" -gt 0 ]; then
+    log "señales: $([ "$MANDADAS" = 1 ] && echo "mandadas $NE por Telegram" || echo "ninguna mandada")$([ "$NR_" -gt 0 ] && echo "; $NR_ para la proxima pasada")$([ "$NV" -gt 0 ] && echo "; $NV de hace mas de $AVHORAS h, marcadas sin mandar")"
+  fi
+  return $er_
 }
 
 # --- Principal ---------------------------------------------------------------
@@ -511,12 +753,32 @@ prepara_tabla(){
 prepara_tabla cripto_vela "$TABLA"; TABLA_OK=$OK
 prepara_tabla cripto_indicador "$TABLA_IND"; IND_OK=$OK
 prepara_tabla cripto_fibonacci "$TABLA_FIB"
+# cripto_aviso no se crea aqui: la crea guarda_senales junto con sus primeras
+# señales (ver alli por que).
+AV_OK=0; AV_NUEVA=0
+if [ -n "$AVISOS" ]; then
+  tabla_existe cripto_aviso; r=$?
+  case "$r" in 0) AV_OK=1 ;; 1) AV_NUEVA=1 ;; *) log "ERROR no puedo consultar rqlite en $RQ ($ERRMSG)"; exit 1 ;; esac
+fi
 
 final=0
 for P in $PRODUCTOS; do
   procesa "$P"; r=$?
   [ "$r" -gt "$final" ] && final=$r
 done
+
+# 7. Señales: se calculan con lo de esta pasada y se mandan las pendientes
+#    (tambien las que quedaron de una pasada anterior en la que Telegram fallo).
+if [ -n "$AVISOS" ]; then
+  guarda_senales; r7=$?
+  if [ "$SECO" = 0 ] && [ "$AV_OK" = 1 ]; then
+    envia_senales; r=$?; [ "$r" -gt "$r7" ] && r7=$r
+  fi
+  [ "$r7" -gt "$final" ] && final=$r7
+  [ "$SECO" = 0 ] && estado_senales "$r7"
+elif [ "$SECO" = 0 ]; then
+  estado_senales 0 limpiar
+fi
 
 # El log es un diario: con las ultimas 1000 lineas sobra.
 tail -n 1000 "$LOG" > "$LOG.tmp" 2>/dev/null && mv "$LOG.tmp" "$LOG"

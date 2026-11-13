@@ -10,8 +10,9 @@ const INICIO = 1672617600; // 2023-01-02, lunes
 function lcg(seed) { let s = seed >>> 0; return () => { s = (Math.imul(s, 1664525) + 1013904223) >>> 0; return s / 4294967296; }; }
 const r2 = x => Math.round(x * 100) / 100;
 
-// estado: { ahora, quitar: [ts], cambiar: { ts: {o,h,l,c,v} }, fallo500, invalida, vacio, ventanaVacia }
-// quitar y cambiar solo se aplican a BTC-USD.
+// estado: { ahora, quitar: [ts], cambiar: { ts: {o,h,l,c,v} }, cambiarEn: { producto: { ts: {...} } },
+//           fallo500, fallaProducto, invalida, vacio, ventanaVacia, tgFalla }
+// quitar y cambiar solo se aplican a BTC-USD; cambiarEn, al producto que diga.
 function leeEstado(f) { try { return JSON.parse(fs.readFileSync(f, 'utf8')); } catch { return {}; } }
 
 // Productos que sirve el Coinbase falso. El perpetuo imita al de verdad
@@ -50,6 +51,8 @@ function velas(estado, producto = 'BTC-USD') {
       v = rv(v * fr);
     }
     let vela = { t, o, h, l, c, v };
+    const camEn = ((estado.cambiarEn || {})[producto] || {})[String(t)];
+    if (camEn) vela = Object.assign(vela, camEn);
     if (producto === 'BTC-USD') {
       const cam = (estado.cambiar || {})[String(t)];
       if (cam) vela = Object.assign(vela, cam);

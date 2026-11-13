@@ -213,4 +213,22 @@ CREATE TABLE cripto_indicador (producto TEXT NOT NULL, marco TEXT NOT NULL, base
 
 CREATE TABLE cripto_fibonacci (producto TEXT NOT NULL, tramo TEXT NOT NULL, nivel REAL NOT NULL, precio REAL NOT NULL, bajo_ts INTEGER NOT NULL, bajo REAL NOT NULL, alto_ts INTEGER NOT NULL, alto REAL NOT NULL, caida REAL NOT NULL, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, tramo, nivel)) WITHOUT ROWID;
 
--- fin: 16 tablas, 1 vista(s), 7 indices
+-- ---------------------------------------------------------------------
+-- SEÑALES DE BTC: una fila por señal al cierre de una vela (marco 1d/1w, ts de
+-- la vela) y tipo: canal (ruptura del canal de regresion), ema100, ema200, emas
+-- (cruce entre las dos), fib (cruce de niveles de Fibonacci) o ha (cambio de
+-- color del Heikin Ashi). producto = la serie de la que salio: el perpetuo, o el
+-- spot donde al perpetuo le falta el dato. sentido 1 arriba, -1 abajo; precio =
+-- cierre; nivel = la referencia cruzada (EMA, borde, nivel, cierre HA); texto =
+-- la linea del mensaje. enviado: null pendiente, 0 no se manda (de antes de
+-- crear la tabla), -1 caducada sin mandar (vela cerrada hace mas de 36 h), o la
+-- hora en que Telegram la acepto. La escribe btc/Sentinel-BTC-Velas.sh con
+-- INSERT OR IGNORE (una señal no se duplica ni se vuelve a mandar), que la crea
+-- con sus primeras señales. El estado de ese paso va en sentinel_vigia (fila
+-- btc-senales: ts desde cuando, pendientes = su codigo, 0 bien). Anadida el
+-- 2026-11-13.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE cripto_aviso (marco TEXT NOT NULL, ts INTEGER NOT NULL, tipo TEXT NOT NULL, producto TEXT NOT NULL, sentido INTEGER NOT NULL, precio REAL NOT NULL, nivel REAL, texto TEXT NOT NULL, creado INTEGER NOT NULL, enviado INTEGER, PRIMARY KEY (marco, ts, tipo)) WITHOUT ROWID;
+
+-- fin: 17 tablas, 1 vista(s), 7 indices

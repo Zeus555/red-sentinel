@@ -104,6 +104,14 @@ case "$url" in
   */db/query)
     autoriza
     case "$q" in
+      # Estado de las señales de BTC: $M/vigia.btc con "ts,codigo,nodo". Va antes
+      # que la fila de los avisos, que tambien es de sentinel_vigia.
+      *"clave='btc-senales'"*)
+        if [ -f "$M/vigia.btc" ]; then
+          printf '{"results":[{"columns":["ts","pendientes","wheel"],"values":[[%s,%s,"%s"]]}]}' \
+            "$(cut -d, -f1 "$M/vigia.btc")" "$(cut -d, -f2 "$M/vigia.btc")" "$(cut -d, -f3 "$M/vigia.btc")"
+        else printf '{"results":[{"columns":["ts","pendientes","wheel"]}]}'; fi
+        codigo 200; exit 0 ;;
       *"FROM sentinel_vigia"*) if [ -f "$M/vigia" ]; then printf '{"results":[{"columns":["ts","wheel","pendientes"],"values":[[%s]]}]}' "$(cat "$M/vigia")"; else printf '{"results":[{"columns":["ts","wheel","pendientes"]}]}'; fi; codigo 200; exit 0 ;;
       *"sentinel_bateria b JOIN"*) [ -f "$M/bat.json" ] && cat "$M/bat.json" || printf '{"results":[{"columns":["a"]}]}'; codigo 200; exit 0 ;;
       *"FROM sentinel_temp WHERE node=n"*)
@@ -115,6 +123,19 @@ case "$url" in
           t=$(printf '%s' "$l" | cut -d, -f2); b=$(printf '%s' "$l" | cut -d, -f3)
           printf '%s["%s",%s,%s]' "$sep" "$n" "${t:-null}" "${b:-null}"; sep=","
         done
+        printf ']}]}'; codigo 200; exit 0 ;;
+      # Monitoreo de BTC: $M/btc con lineas "producto,ultimo actualizado[,ts de
+      # la ultima vela]" (sin ts: la vela del dia de ese actualizado).
+      *"FROM cripto_vela WHERE marco='1d' GROUP BY producto"*)
+        [ -f "$M/btc.sintabla" ] && { printf '{"results":[{"error":"no such table: cripto_vela"}]}'; codigo 200; exit 0; }
+        [ -f "$M/btc" ] || { printf '{"results":[{"columns":["producto","MAX(actualizado)","MAX(ts)"]}]}'; codigo 200; exit 0; }
+        printf '{"results":[{"columns":["producto","MAX(actualizado)","MAX(ts)"],"types":["text","integer","integer"],"values":['
+        sep=""
+        while IFS=, read -r p ac vt; do
+          [ -n "$p" ] || continue
+          [ -n "$vt" ] || vt=$((ac - ac % 86400))
+          printf '%s["%s",%s,%s]' "$sep" "$p" "$ac" "$vt"; sep=","
+        done < "$M/btc"
         printf ']}]}'; codigo 200; exit 0 ;;
     esac
     printf '{"results":[{"error":"no esperado"}]}'; codigo 200; exit 0 ;;
@@ -309,6 +330,94 @@ for c in 1 2 3 4; do
   for j in 1 2 3; do avanza; fitness 10.0.0.3 sentinelB; datos "$NOW" "$NOW" "$PAR"; ronda; done
 done
 si "D6 cron muerto en un nodo que se cae una pasada de cada cuatro: acaba avisando" 'grep -q "dt_mal ok" "$B/alert.log"'
+
+echo "== Monitoreo de BTC"
+# btc "producto,actualizado[,ts de la ultima vela]" ...: lo que hay en cripto_vela.
+# rb: una pasada con la telemetria al dia (si no, la replica no cuenta como al
+# dia y BTC no se mira, que es otra prueba).
+btc(){ printf '%s\n' "$@" > "$M/btc"; }
+rb(){ datos_frescos; ronda; }
+PE=BIP-20DEC30-CDE
+mundo_sano; btc "$PE,$NOW" "BTC-USD,$NOW"; rb
+si "BV1 BTC al dia: ningun mensaje y los dos productos en ok" 'nada && [ "$(estado bv:$PE)" = ok ] && [ "$(estado bv:BTC-USD)" = ok ]'
+avanza; btc "$PE,$((NOW - 840))" "BTC-USD,$NOW"; rb
+si "BV2 14 min sin escribir (menos de tres pasadas): aun no" 'nada && [ "$(estado bv:$PE)" = ok ]'
+avanza; btc "$PE,$((NOW - 900))" "BTC-USD,$NOW"; rb
+si "BV2 justo 15 min: aun no (el plazo es estricto)" 'nada && [ "$(estado bv:$PE)" = ok ]'
+avanza; btc "$PE,$((NOW - 1500))" "BTC-USD,$NOW"; rb
+si "BV2 25 min: avisa del producto parado, con cuanto hace y donde mirar" 'hay "el monitoreo de BTC no está al día" && hay "• $PE: sin escribir desde hace 25 min" && hay "sentinel-btc-velas" && ! hay "BTC-USD"'
+avanza; btc "$PE,$((NOW - 1800))" "BTC-USD,$NOW"; rb
+si "BV2 sigue parado: silencio" 'nada && [ "$(estado bv:$PE)" = mal ]'
+avanza; btc "$PE,$NOW" "BTC-USD,$NOW"; rb
+si "BV3 vuelve: aviso de vuelta, sin una duracion que contradiga la del aviso" 'hay "el monitoreo de BTC vuelve a estar al día" && hay "• $PE" && ! hay "tras"'
+avanza; rb
+si "BV3 y no se repite" 'nada'
+mundo_sano; btc "$PE,$NOW"; rb; PAR=$NOW
+for i in 1 2 3; do avanza; btc "$PE,$PAR"; rb; done
+si "BV4 a los 15 min justos, aun nada" '! grep -q "bv_mal" "$B/alert.log" 2>/dev/null'
+avanza; btc "$PE,$PAR"; rb
+si "BV4 a los 20 min avisa" 'grep -q "bv_mal ok" "$B/alert.log"'
+avanza 86400; btc "$PE,$PAR"; rb
+si "BV4 parado mas de un dia: recordatorio con la edad al dia" 'hay "sigue pendiente" && hay "• $PE: sin escribir desde hace 1 d 0 h"'
+mundo_sano; ronda; CONG=$NOW
+for i in 1 2 3 4 5 6; do avanza; datos "$CONG" "$((CONG-200))" "$((CONG-100))"; btc "$PE,$CONG"; ronda; done
+si "BV5 base congelada: no se culpa al monitoreo de BTC" '! grep -q "bv_mal" "$B/alert.log" 2>/dev/null'
+mundo_sano; btc "$PE,$NOW"; rb; PAR=$NOW
+for i in 1 2 3 4 5; do avanza; datos "$((NOW - 660))" "$((NOW - 700))" "$((NOW - 700))"; btc "$PE,$((PAR - 960 + i * 300 - 300))"; ronda; done
+si "BV5b replica del Wheel atrasada 11 min (bateria aun dentro de su plazo): tampoco" '! grep -q "bv_mal" "$B/alert.log" 2>/dev/null && [ "$(estado df:flota)" = ok ]'
+# Temperatura parada en toda la flota pero bateria al dia: la replica SI esta al
+# dia (lo mas reciente es de hace 100 s), asi que BTC se sigue vigilando.
+mundo_sano; btc "$PE,$NOW"; rb; PAR=$NOW
+for i in 1 2 3 4 5; do avanza; printf 'sentinelW,%s,\nsentinelA,%s,%s\nsentinelB,%s,%s\n' "$((NOW - 660))" "$((NOW - 660))" "$((NOW - 100))" "$((NOW - 660))" "$((NOW - 100))" > "$M/datos"; btc "$PE,$PAR"; ronda; done
+si "BV5c sin temperatura en la flota pero con bateria al dia: BTC parado si avisa" 'grep -q "bv_mal ok" "$B/alert.log"'
+mundo_sano; btc "$PE,$NOW"; rb; PAR=$NOW; echo 503 > "$M/readyz"
+for i in 1 2 3 4 5 6; do avanza; btc "$PE,$PAR"; rb; done
+si "BV6 sin lider: solo el aviso de rqlite, ni una palabra de BTC" '! grep -q "bv_mal" "$B/alert.log" && grep -q "cl_mal ok" "$B/alert.log"'
+mundo_sano; btc "$PE,$NOW"; rb; touch "$M/btc.sintabla"
+for i in 1 2 3 4 5 6; do avanza; rb; done
+si "BV7 sin la tabla (o la consulta falla): silencio y conserva el estado" 'nada && [ "$(estado bv:$PE)" = ok ]'
+mundo_sano; btc "VIEJO-X,$((NOW - 700000))" "$PE,$NOW"; rb
+si "BV8 un producto sin escribir hace mas de una semana, con otro al dia: retirado, no se mira" 'nada && [ -z "$(estado bv:VIEJO-X)" ] && [ "$(estado bv:$PE)" = ok ]'
+mundo_sano; btc "$PE,$NOW" "BTC-USD,$NOW"; rb; PAR=$NOW
+for i in 1 2 3 4; do avanza; btc "$PE,$PAR" "BTC-USD,$PAR"; rb; done
+for d in 1 2 3 4 5 6 7 8; do avanza 86400; btc "$PE,$PAR" "BTC-USD,$PAR"; rb; done
+si "BV8b parado todo 8 dias: no se calla (recordatorio del dia 8, de los dos productos)" 'hay "sigue pendiente" && hay "• $PE: sin escribir desde hace 8 d" && hay "• BTC-USD: sin escribir desde hace 8 d"'
+avanza; btc "$PE,$NOW" "BTC-USD,$NOW"; rb
+si "BV8b ...y cuando vuelve, lo dice" 'hay "vuelve a estar al día" && hay "• $PE"'
+mundo_sano; btc "VIEJO-Y,$((NOW - 30 * 86400))" "$PE,$((NOW - 8 * 86400))" "BTC-USD,$((NOW - 8 * 86400))"; rb
+si "BV8c todo parado 8 dias y uno retirado hace 30: avisa de los dos de ahora, no del retirado" 'hay "• $PE: sin escribir desde hace 8 d" && hay "• BTC-USD: sin escribir" && ! hay "VIEJO-Y" && [ -z "$(estado bv:VIEJO-Y)" ]'
+mundo_sano; conf "BTC_DATOS_MAX_MIN=60"; btc "$PE,$NOW"; rb; PAR=$NOW
+for i in 1 2 3 4; do avanza; btc "$PE,$PAR"; rb; done
+si "BV9 con BTC_DATOS_MAX_MIN=60, 20 min sin escribir no avisa" 'nada && [ "$(estado bv:$PE)" = ok ] && ! grep -q "bv_mal" "$B/alert.log" 2>/dev/null'
+# Escribe, pero la ultima vela es de ayer: Coinbase no la trae. El reloj salta a
+# la 01:00 UTC del dia siguiente (siempre hacia delante).
+NOW=$(( (NOW / 86400 + 1) * 86400 + 3600 )); HOY=$((NOW - 3600))
+mundo_sano; btc "$PE,$NOW,$HOY" "BTC-USD,$NOW,$HOY"; rb
+si "BV10 con la vela de hoy: bien" 'nada && [ "$(estado bv:$PE)" = ok ]'
+avanza; btc "$PE,$NOW,$((HOY - 86400))" "BTC-USD,$NOW,$HOY"; rb
+si "BV10 escribe pero sin la vela de hoy: Coinbase no la trae, con las fechas en UTC" 'hay "no está al día" && hay "• $PE: escribe, pero Coinbase no trae la vela del $(date -u -d "@$HOY" +%d/%m) (UTC); la última es del $(date -u -d "@$((HOY - 86400))" +%d/%m)" && ! hay "BTC-USD"'
+NOW=$(( (NOW / 86400 + 1) * 86400 + 840 )); HOY=$((NOW - 840))
+mundo_sano; btc "$PE,$NOW,$((HOY - 86400))"; rb
+si "BV10 a las 00:14 UTC aun sin la de hoy: todavia no (plazo tras medianoche)" 'nada && [ "$(estado bv:$PE)" = ok ]'
+
+echo "== Señales de BTC"
+# vbtc <desde> <codigo>: lo que apunta la pasada de BTC en sentinel_vigia.
+vbtc(){ printf '%s,%s,sentinel014\n' "$1" "$2" > "$M/vigia.btc"; }
+mundo_sano; btc "$PE,$NOW"; vbtc "$((NOW - 3600))" 0; rb
+si "BS1 señales bien: nada, y bs:senales en ok" 'nada && [ "$(estado bs:senales)" = ok ]'
+avanza; btc "$PE,$NOW"; vbtc "$((NOW - 600))" 1; rb
+si "BS2 fallan desde hace 10 min: aun no" 'nada && [ "$(estado bs:senales)" = ok ]'
+avanza; btc "$PE,$NOW"; vbtc "$((NOW - 1000))" 1; rb
+si "BS2 desde hace 16 min: avisa, con el codigo y donde mirar" 'hay "las señales de BTC no salen" && hay "• señales de BTC: fallan desde hace 16 min (el paso 7 sale con 1)" && hay "velas.log"'
+avanza; btc "$PE,$NOW"; rb
+si "BS2 sigue fallando: silencio" 'nada && [ "$(estado bs:senales)" = mal ]'
+avanza; btc "$PE,$NOW"; vbtc "$NOW" 0; rb
+si "BS3 vuelven a salir: lo dice" 'hay "las señales de BTC vuelven a salir"'
+mundo_sano; btc "$PE,$NOW"; rb
+si "BS4 sin la fila (la pasada nunca la apunto): no se observa" 'nada && [ -z "$(estado bs:senales)" ]'
+mundo_sano; ronda; CONG=$NOW
+for i in 1 2 3 4 5 6; do avanza; datos "$CONG" "$((CONG-200))" "$((CONG-100))"; vbtc "$CONG" 2; ronda; done
+si "BS5 con la base congelada no se mira" '! grep -q "bs_mal" "$B/alert.log" 2>/dev/null'
 
 echo "== rqlite"
 mundo_sano; ronda; avanza; echo 503 > "$M/readyz"; ronda
