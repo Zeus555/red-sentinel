@@ -184,4 +184,33 @@ CREATE TABLE sentinel_respaldo (fichero TEXT PRIMARY KEY, ts INTEGER NOT NULL, f
 
 CREATE TABLE cripto_vela (producto TEXT NOT NULL, marco TEXT NOT NULL, ts INTEGER NOT NULL, apertura REAL NOT NULL, maximo REAL NOT NULL, minimo REAL NOT NULL, cierre REAL NOT NULL, volumen REAL NOT NULL, ha_apertura REAL, ha_maximo REAL, ha_minimo REAL, ha_cierre REAL, cerrada INTEGER NOT NULL, dias INTEGER, fuente TEXT, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, marco, ts)) WITHOUT ROWID;
 
--- fin: 14 tablas, 1 vista(s), 7 indices
+-- ---------------------------------------------------------------------
+-- INDICADORES DE BTC sobre cripto_vela: una fila por producto, marco, base y
+-- ts (los de cripto_vela). base 'real' calcula sobre el cierre real y 'ha'
+-- sobre el cierre Heikin Ashi (lo que dibuja TradingView en Heikin Ashi).
+-- EMA 100 y 200; Bollinger 20 con 2σ; canal de regresion de 100 velas con 2σ
+-- (centro, bandas, pendiente por vela, Pearson con signo) y rl_ruptura: 1 si el
+-- cierre quedo por encima del canal de las 100 velas anteriores, -1 por debajo,
+-- 0 dentro. null donde aun no hay velas suficientes. version es la del calculo
+-- (indicadores-calculo.awk). La escribe btc/Sentinel-BTC-Velas.sh, que la crea
+-- si no existe. ~10.600 filas. Anadida el 2026-11-12.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE cripto_indicador (producto TEXT NOT NULL, marco TEXT NOT NULL, base TEXT NOT NULL, ts INTEGER NOT NULL, ema100 REAL, ema200 REAL, bb_media REAL, bb_sup REAL, bb_inf REAL, rl_centro REAL, rl_sup REAL, rl_inf REAL, rl_pendiente REAL, rl_r REAL, rl_ruptura INTEGER, cerrada INTEGER NOT NULL, version INTEGER NOT NULL, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, marco, base, ts)) WITHOUT ROWID;
+
+-- ---------------------------------------------------------------------
+-- FIBONACCI DE BTC: los niveles de retroceso del tramo 'ciclo', del fondo del
+-- ultimo mercado bajista ya superado (el peor cierre >= 50 % bajo el maximo
+-- historico de entonces, y al menos un año hasta volver a superarlo) al maximo
+-- historico; hoy del minimo de 2022 (15.460) al ATH de 2025 (126.296).
+-- nivel 0 = el maximo, 1 = el minimo, precio = alto - nivel x (alto - bajo);
+-- los de TradingView por defecto (0 a 1, y 1,618 a 4,236 solo si dan un precio
+-- positivo). Cada fila lleva las dos anclas y caida (lo que cayo el cierre en
+-- aquel bajista). Solo hay filas de un producto con historia para tener un
+-- ciclo (BTC-USD). Se rehace entera en cada pasada de btc/Sentinel-BTC-Velas.sh,
+-- que la crea si no existe. Hoy 7 filas. Anadida el 2026-11-12.
+-- ---------------------------------------------------------------------
+
+CREATE TABLE cripto_fibonacci (producto TEXT NOT NULL, tramo TEXT NOT NULL, nivel REAL NOT NULL, precio REAL NOT NULL, bajo_ts INTEGER NOT NULL, bajo REAL NOT NULL, alto_ts INTEGER NOT NULL, alto REAL NOT NULL, caida REAL NOT NULL, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, tramo, nivel)) WITHOUT ROWID;
+
+-- fin: 16 tablas, 1 vista(s), 7 indices

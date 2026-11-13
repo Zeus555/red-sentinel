@@ -24,8 +24,25 @@
 #      toda la historia, la Heikin Ashi diaria, la vela semanal (lunes 00:00 UTC)
 #      y su Heikin Ashi (velas-calculo.awk). La Heikin Ashi es recursiva: un
 #      calculo a trozos acumularia error.
-#   4. Escribe solo las filas que pueden haber cambiado, en lotes con
-#      ?transaction. Una pasada sin novedades reescribe 3-4 dias y 1-2 semanas.
+#   4. Calcula los indicadores (indicadores-calculo.awk) sobre toda la historia,
+#      diaria y semanal, con el cierre real y con el Heikin Ashi: EMA 100 y 200,
+#      Bollinger 20 con 2σ y canal de regresion de 100 velas con 2σ y rupturas.
+#      Van a la tabla cripto_indicador. Son causales (cada vela solo depende de
+#      las anteriores), asi que bastan las mismas filas recientes que las velas.
+#      Si lo guardado antes de esas filas no esta completo y en la version
+#      actual del calculo (primera vez, una pasada cortada, VERSION nueva), se
+#      reescriben todos los indicadores del producto.
+#   4c. Calcula los niveles de Fibonacci del ciclo (fibonacci-calculo.awk): del
+#      fondo del ultimo mercado bajista (cierre >= 50 % bajo el maximo, y al
+#      menos un año hasta superarlo) al maximo historico; hoy, del minimo de
+#      2022 al ATH de 2025. Van a la tabla cripto_fibonacci. Cada producto con
+#      su propia historia: hoy solo BTC-USD tiene un bajista ya superado; el
+#      perpetuo tendra el suyo el dia que supere su ATH de oct-2025.
+#   5. Escribe solo las filas que pueden haber cambiado, en lotes con
+#      ?transaction. Una pasada sin novedades reescribe 3-4 dias y 1-2 semanas
+#      de velas, y lo mismo de indicadores por dos (real y Heikin Ashi). Los
+#      niveles de Fibonacci se rehacen enteros en cada pasada, aparte, en una
+#      sola transaccion.
 #
 # Solo usa el endpoint PUBLICO de velas de Coinbase Advanced Trade: sin claves,
 # sin cuenta, sin ordenes. Las peticiones a Coinbase van con `curl -q` para que
@@ -59,8 +76,10 @@
 #   CB_API, CB_PAUSA, CB_ESPERA, BTC_LOTE, BTC_AHORA   solo para pruebas
 #
 # Codigos de salida: 0 bien; 1 fallo de red, de Coinbase o de rqlite (se puede
-# reintentar: escribir dos veces la misma vela no cambia nada); 2 datos que no
-# cuadran (no se escribio nada de ese producto); 64 uso incorrecto.
+# reintentar: escribir dos veces la misma vela no cambia nada), o del equipo (no
+# se puede crear la carpeta o el cerrojo, falta un fichero de btc/: eso no se
+# arregla reintentando); 2 datos que no cuadran (no se escribio nada de ese
+# producto); 64 uso incorrecto.
 set -u
 # Punto decimal SIEMPRE: con un locale de coma decimal, awk podria escribir
 # "71487,33" y el JSON de la sentencia dejaria de serlo.
@@ -91,6 +110,8 @@ AHORA="${BTC_AHORA:-$(date +%s)}"
 MARGEN="${BTC_MARGEN:-60}"
 UA="sentinel-btc-velas/1.0"
 CALC="$AQUI/velas-calculo.awk"
+INDIC="$AQUI/indicadores-calculo.awk"
+FIBO="$AQUI/fibonacci-calculo.awk"
 LECTOR="$AQUI/coinbase-velas.awk"
 DIA=86400
 VENTANA=300          # dias por peticion (Coinbase acepta hasta 350)
@@ -127,6 +148,11 @@ FUENTE=$(printf '%s' "${NAME:-$(hostname 2>/dev/null)}" | tr -cd 'A-Za-z0-9._-')
 
 mkdir -p "$DIR" || exit 1
 log(){ printf '%s %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; printf '%s\n' "$1"; }
+
+# Los cuatro awk viajan con el script: sin uno de ellos no se escribe nada.
+for f in "$CALC" "$INDIC" "$FIBO" "$LECTOR"; do
+  [ -r "$f" ] || { log "ERROR falta $f: hay que copiar la carpeta btc/ entera"; exit 1; }
+done
 
 # --- Una sola pasada a la vez en este equipo ---------------------------------
 # El cerrojo es SOLO local. Dos nodos a la vez no rompen la base (cada lote es una
@@ -176,13 +202,27 @@ rq(){
 
 TABLA='CREATE TABLE IF NOT EXISTS cripto_vela (producto TEXT NOT NULL, marco TEXT NOT NULL, ts INTEGER NOT NULL, apertura REAL NOT NULL, maximo REAL NOT NULL, minimo REAL NOT NULL, cierre REAL NOT NULL, volumen REAL NOT NULL, ha_apertura REAL, ha_maximo REAL, ha_minimo REAL, ha_cierre REAL, cerrada INTEGER NOT NULL, dias INTEGER, fuente TEXT, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, marco, ts)) WITHOUT ROWID'
 
+TABLA_IND='CREATE TABLE IF NOT EXISTS cripto_indicador (producto TEXT NOT NULL, marco TEXT NOT NULL, base TEXT NOT NULL, ts INTEGER NOT NULL, ema100 REAL, ema200 REAL, bb_media REAL, bb_sup REAL, bb_inf REAL, rl_centro REAL, rl_sup REAL, rl_inf REAL, rl_pendiente REAL, rl_r REAL, rl_ruptura INTEGER, cerrada INTEGER NOT NULL, version INTEGER NOT NULL, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, marco, base, ts)) WITHOUT ROWID'
+
+TABLA_FIB='CREATE TABLE IF NOT EXISTS cripto_fibonacci (producto TEXT NOT NULL, tramo TEXT NOT NULL, nivel REAL NOT NULL, precio REAL NOT NULL, bajo_ts INTEGER NOT NULL, bajo REAL NOT NULL, alto_ts INTEGER NOT NULL, alto REAL NOT NULL, caida REAL NOT NULL, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, tramo, nivel)) WITHOUT ROWID'
+
 # Se pregunta antes de crear: un CREATE TABLE IF NOT EXISTS es una escritura de
 # Raft que se replicaria a los 11 nodos en cada pasada para nada.
+# tabla_existe <nombre>: 0 existe, 1 no existe, 2 no se pudo preguntar.
 tabla_existe(){
-  printf '[["SELECT name FROM sqlite_master WHERE type=? AND name=?","table","cripto_vela"]]' > "$TMPD/q.json"
+  printf '[["SELECT name FROM sqlite_master WHERE type=? AND name=?","table","%s"]]' "$1" > "$TMPD/q.json"
   rq 'query?level=weak' "$TMPD/q.json" || return 2
-  grep -q '"cripto_vela"' "$TMPD/rq.out"
+  grep -q "\"$1\"" "$TMPD/rq.out"
 }
+
+# indicadores <desde>: calcula los indicadores de $TMPD/velas.tsv -> $TMPD/ind.txt
+indicadores(){
+  awk -v producto="$P" -v desde="$1" -v salida=json -v actualizado="$AHORA" -f "$INDIC" \
+      "$TMPD/velas.tsv" > "$TMPD/ind.txt" 2> "$TMPD/ind.err"
+}
+# error_de <fichero>: la linea ERROR de un calculo o, si no la hay (p. ej. awk
+# no pudo abrir algo), lo primero que dijo.
+error_de(){ { grep ERROR "$1" || head -2 "$1"; } 2>/dev/null | head -1 | head -c 300; }
 
 # --- Coinbase ------------------------------------------------------------------
 # cb_get <url>  ->  $TMPD/cb.out. Tres reintentos con espera creciente.
@@ -306,6 +346,90 @@ procesa(){
   fi
   RES=$(grep '^RESUMEN' "$TMPD/calc.err")
   HUECOS=$(grep -c '^HUECO' "$TMPD/calc.err")
+  ESCRITAS=$(wc -l < "$TMPD/sentencias.txt" | tr -d ' ')
+
+  # 4b. Indicadores, sobre TODAS las velas (diarias y semanales, en tsv). Van
+  #     en los mismos lotes que las velas a proposito: si un lote falla, no queda
+  #     una vela nueva con el indicador de una version a medias de ella.
+  if ! awk -v producto="$P" -v ahora="$CORTE" -v desde=0 -v salida=tsv -f "$CALC" "$TMPD/serie.txt" \
+          > "$TMPD/velas.tsv" 2>/dev/null || ! indicadores "$DESDE"; then
+    log "ERROR $P: el calculo de indicadores fallo: $(error_de "$TMPD/ind.err")"; return 2
+  fi
+  VER=$(sed -n 's/^RESUMEN_IND version=\([0-9]*\).*/\1/p' "$TMPD/ind.err")
+  # La version 0 es la marca de "por reescribir" (ver mas abajo): nunca es valida.
+  case "$VER" in ''|0|*[!0-9]*) log "ERROR $P: el calculo de indicadores no dio una version valida ($VER)"; return 2 ;; esac
+  # Las filas anteriores a DESDE no se reescriben: tienen que estar ya guardadas,
+  # todas, CERRADAS (antes de DESDE todas las velas lo estan) y con esta VERSION
+  # del calculo. Si no (primera vez, una pasada que se corto, un calculo nuevo o
+  # el de un script anterior, una fila que se guardo con la vela a medias y no se
+  # rehizo), se escriben todas otra vez.
+  # Se cuentan las buenas y TODAS: una fila de mas (de una vela que no existe,
+  # en cualquier version) tambien obliga a reescribir, y asi se borra.
+  IND_MODO=incremental; PREVIAS=0; GUARD=0; HAY=0
+  if [ "$DESDE" -gt 0 ]; then
+    PREVIAS=$(sed -n 's/^RESUMEN_IND .*previas=\([0-9]*\).*/\1/p' "$TMPD/ind.err")
+    if [ "$IND_OK" = 1 ]; then
+      printf '[["SELECT COUNT(*), COALESCE(SUM(CASE WHEN version=? AND cerrada=1 THEN 1 ELSE 0 END),0) FROM cripto_indicador WHERE producto=? AND ((marco=? AND ts<?) OR (marco=? AND ts+604800<=?))",%s,"%s","1d",%s,"1w",%s]]' \
+        "$VER" "$P" "$DESDE" "$DESDE" > "$TMPD/q.json"
+      rq 'query?level=weak' "$TMPD/q.json" || { log "ERROR $P: no pude contar los indicadores guardados ($ERRMSG)"; return 1; }
+      HAY=$(sed -n 's/.*"values":\[\[\([0-9]*\),\([0-9]*\)\]\].*/\1/p' "$TMPD/rq.out")
+      GUARD=$(sed -n 's/.*"values":\[\[\([0-9]*\),\([0-9]*\)\]\].*/\2/p' "$TMPD/rq.out")
+    fi
+    if [ -z "$PREVIAS" ] || [ "${GUARD:-x}" != "$PREVIAS" ] || [ "${HAY:-x}" != "$PREVIAS" ]; then
+      IND_MODO=completo
+      indicadores 0 || { log "ERROR $P: el calculo de indicadores fallo: $(error_de "$TMPD/ind.err")"; return 2; }
+    fi
+  else
+    IND_MODO=completo
+  fi
+  IND_N=$(wc -l < "$TMPD/ind.txt" | tr -d ' ')
+
+  # 4c. Fibonacci del ciclo, desde las mismas velas diarias (toda la historia).
+  #     Se calcula ANTES de escribir nada: si falla, el producto no se toca.
+  if ! awk -v producto="$P" -v salida=json -v actualizado="$AHORA" -f "$FIBO" "$TMPD/velas.tsv" \
+          > "$TMPD/fib.txt" 2> "$TMPD/fib.err" || [ ! -s "$TMPD/fib.txt" ]; then
+    log "ERROR $P: el calculo de Fibonacci fallo: $(error_de "$TMPD/fib.err")"; return 2
+  fi
+  FIB=$(grep '^RESUMEN_FIB' "$TMPD/fib.err" | awk "$FECHA_AWK"'
+      { for (i = 2; i <= NF; i++) { split($i, kv, "="); r[kv[1]] = kv[2] } }
+      END { if (r["ciclo"] == "1") printf "Fibonacci del ciclo %s (%s) a %s (%s), cierre en el %.1f %%", \
+              r["bajo"], fecha(r["bajo_ts"]), r["alto"], fecha(r["alto_ts"]), 100 * r["retroceso"]
+            else if (r["ciclo"] == "0") printf "sin ciclo para Fibonacci" }')
+  [ -n "$FIB" ] || { log "ERROR $P: el calculo de Fibonacci no dio resumen"; return 2; }
+  # Todas sus sentencias (DELETE del producto + un INSERT por nivel) en UN lote.
+  awk 'BEGIN { printf "[" } { printf "%s%s", (NR > 1 ? "," : ""), $0 } END { print "]" }' \
+      "$TMPD/fib.txt" > "$TMPD/fib.json" || { log "ERROR $P: no pude preparar el lote de Fibonacci"; return 1; }
+  # Todo lo que se escribe, en orden: marca, velas, indicadores (y limpieza).
+  # La MARCA va la primera, en el lote 1 junto con las primeras velas: pone
+  # version=0 ("por reescribir") en las filas de indicadores que esta pasada va
+  # a rehacer. Cada fila vuelve a su VERSION al reescribirse. Si la pasada se
+  # corta en cualquier lote, lo que no llego a rehacerse queda marcado y la
+  # cuenta de la pasada siguiente (que exige version=VERSION) lo detecta. Sin
+  # la marca, un --completo cortado tras una correccion vieja de Coinbase
+  # dejaria indicadores de la serie anterior que nadie volveria a mirar.
+  if [ "$IND_MODO" = incremental ]; then
+    printf '["UPDATE cripto_indicador SET version=0 WHERE producto=? AND ((marco=? AND ts>=?) OR (marco=? AND ts+604800>?))","%s","1d",%s,"1w",%s]\n' "$P" "$DESDE" "$DESDE"
+  else
+    printf '["UPDATE cripto_indicador SET version=0 WHERE producto=?","%s"]\n' "$P"
+  fi > "$TMPD/todas.txt"
+  cat "$TMPD/sentencias.txt" >> "$TMPD/todas.txt"
+  if [ "$IND_MODO" = incremental ]; then
+    # Al final, lo que siga marcado en la zona reciente no se reescribio porque
+    # no es de ninguna vela: se borra. Si la pasada se corta antes, sigue
+    # marcado y la cuenta de la pasada siguiente lo ve.
+    cat "$TMPD/ind.txt" >> "$TMPD/todas.txt"
+    printf '["DELETE FROM cripto_indicador WHERE producto=? AND version=0 AND ((marco=? AND ts>=?) OR (marco=? AND ts+604800>?))","%s","1d",%s,"1w",%s]\n' "$P" "$DESDE" "$DESDE" >> "$TMPD/todas.txt"
+  else
+    # Reescritura completa SIN borrar antes: de la vela mas nueva a la mas vieja,
+    # y al final (ultima sentencia del ultimo lote) se borra lo que no se
+    # reescribio: lo que sigue marcado, que son filas de una vela que ya no
+    # existe. Si un lote falla, lo reciente ya esta bien y lo viejo sigue ahi
+    # (de antes y marcado): no queda ningun hueco, y la pasada siguiente vuelve
+    # a reescribirlo todo.
+    awk '{ l[NR] = $0 } END { for (i = NR; i >= 1; i--) print l[i] }' "$TMPD/ind.txt" >> "$TMPD/todas.txt" \
+      || { log "ERROR $P: no pude ordenar los indicadores"; return 1; }
+    printf '["DELETE FROM cripto_indicador WHERE producto=? AND version<>?","%s",%s]\n' "$P" "$VER" >> "$TMPD/todas.txt"
+  fi
 
   # 5. Escribir en lotes. La carpeta va por ENVIRON y no por -v: -v interpreta
   #    las barras invertidas, y en Windows TMPDIR puede ser C:\Users\...
@@ -313,51 +437,67 @@ procesa(){
   LOTES="$TMPD" awk -v lote="$LOTE" '
       (NR - 1) % lote == 0 { if (f) { print "]" > f; close(f) }; n++; f = sprintf("%s/lote.%05d.json", ENVIRON["LOTES"], n); printf "[" > f; sep = "" }
       { printf "%s%s", sep, $0 > f; sep = "," }
-      END { if (f) { print "]" > f; close(f) } }' "$TMPD/sentencias.txt" \
+      END { if (f) { print "]" > f; close(f) } }' "$TMPD/todas.txt" \
   || { log "ERROR $P: no pude preparar los lotes en $TMPD"; return 1; }
-  ESCRITAS=$(wc -l < "$TMPD/sentencias.txt" | tr -d ' ')
-  if [ "$ESCRITAS" -gt 0 ] && [ ! -e "$TMPD/lote.00001.json" ]; then
-    log "ERROR $P: hay $ESCRITAS sentencias pero ningun lote"; return 1
+  TOTAL=$(wc -l < "$TMPD/todas.txt" | tr -d ' ')
+  if [ "$TOTAL" -gt 0 ] && [ ! -e "$TMPD/lote.00001.json" ]; then
+    log "ERROR $P: hay $TOTAL sentencias pero ningun lote"; return 1
   fi
   if [ "$SECO" = 1 ]; then
     mkdir -p "$DIR/seco"; rm -f "$DIR/seco/$P".*.json
     for f in "$TMPD"/lote.*.json; do [ -e "$f" ] && cp "$f" "$DIR/seco/$P.${f##*/lote.}"; done
+    cp "$TMPD/fib.json" "$DIR/seco/$P.fibonacci.json"
   else
     for f in "$TMPD"/lote.*.json; do
       [ -e "$f" ] || continue
       rq 'execute?transaction' "$f" || { log "ERROR $P: fallo al escribir ${f##*/} ($ERRMSG); lo que ya entro es valido y la proxima pasada completa el resto"; return 1; }
     done
+    # Fibonacci va aparte, despues de las velas de las que sale, y en una sola
+    # transaccion: o quedan los niveles nuevos o siguen los de antes. Se rehace
+    # entero en cada pasada, asi que si falla, la siguiente lo arregla.
+    rq 'execute?transaction' "$TMPD/fib.json" || { log "ERROR $P: fallo al escribir Fibonacci ($ERRMSG); las velas y los indicadores ya entraron y la proxima pasada lo rehace"; return 1; }
   fi
 
   # 6. Resumen legible.
   printf '%s\n' "$RES" | awk -v escritas="$ESCRITAS" -v huecos="$HUECOS" -v cambios="$CAMBIOS" \
-      -v modo="$MODO" -v seco="$SECO" -v ahora="$CORTE" "$FECHA_AWK"'
+      -v modo="$MODO" -v seco="$SECO" -v ahora="$CORTE" -v ind="$IND_N" -v indmodo="$IND_MODO" -v fib="$FIB" "$FECHA_AWK"'
     { for (i = 2; i <= NF; i++) { split($i, kv, "="); r[kv[1]] = kv[2] } }
     END {
       abierta = (r["ultima"] + 86400 > ahora) ? " (vela de hoy, aun abierta)" : ""
-      printf "%s: %d velas diarias (%s a %s) y %d semanales; %d dias faltantes en %d tramos; %d velas cerradas corregidas por Coinbase; %d filas %s (modo %s); ultimo cierre %s%s\n", \
+      printf "%s: %d velas diarias (%s a %s) y %d semanales; %d dias faltantes en %d tramos; %d velas cerradas corregidas por Coinbase; %d filas %s (modo %s); %d filas de indicadores (%s); %s; ultimo cierre %s%s\n", \
         r["producto"], r["diarias"], fecha(r["primera"]), fecha(r["ultima"]), r["semanales"], r["huecos"], r["tramos"], \
-        cambios, escritas, (seco ? "calculadas sin escribir" : "escritas"), modo, r["cierre"], abierta
+        cambios, escritas, (seco ? "calculadas sin escribir" : "escritas"), modo, ind, indmodo, fib, r["cierre"], abierta
     }' > "$TMPD/linea.txt"
   log "$(cat "$TMPD/linea.txt")"
   [ "$HUECOS" -gt 0 ] && log "  huecos de $P: $(grep '^HUECO' "$TMPD/calc.err" | awk "$FECHA_AWK"' { printf "%s%s..%s", (NR > 1 ? ", " : ""), fecha($2), fecha($3) }' | head -c 400)"
   [ "$CAMBIOS" -gt 0 ] && log "  AVISO $P: Coinbase cambio $CAMBIOS velas que ya estaban cerradas; quedaron sobrescritas"
+  # Una reescritura completa con velas ya guardadas deberia ser rara (la
+  # primera vez, una VERSION nueva o tras una pasada cortada): si sale en cada
+  # pasada, algo no cuadra y esta linea lo deja a la vista.
+  [ "$IND_MODO" = completo ] && [ "$DESDE" -gt 0 ] && \
+    log "  indicadores de $P reescritos enteros: antes del $(echo "$DESDE" | awk "$FECHA_AWK"' { print fecha($1) }') habia $HAY filas, $GUARD cerradas de la version $VER, y debian ser $PREVIAS"
   return 0
 }
 
 # --- Principal ---------------------------------------------------------------
-TABLA_OK=0
-tabla_existe; r=$?
-if [ "$r" = 0 ]; then
-  TABLA_OK=1
-elif [ "$r" = 2 ]; then
-  log "ERROR no puedo consultar rqlite en $RQ ($ERRMSG)"; exit 1
-elif [ "$SECO" = 0 ]; then
-  printf '[["%s"]]' "$TABLA" > "$TMPD/t.json"
-  rq 'execute' "$TMPD/t.json" || { log "ERROR no pude crear la tabla cripto_vela ($ERRMSG)"; exit 1; }
-  log "creada la tabla cripto_vela en rqlite"
-  TABLA_OK=1
-fi
+# prepara_tabla <nombre> <CREATE>: deja 1 en $OK si la tabla existe o se creo.
+prepara_tabla(){
+  OK=0
+  tabla_existe "$1"; r=$?
+  if [ "$r" = 0 ]; then
+    OK=1
+  elif [ "$r" = 2 ]; then
+    log "ERROR no puedo consultar rqlite en $RQ ($ERRMSG)"; exit 1
+  elif [ "$SECO" = 0 ]; then
+    printf '[["%s"]]' "$2" > "$TMPD/t.json"
+    rq 'execute' "$TMPD/t.json" || { log "ERROR no pude crear la tabla $1 ($ERRMSG)"; exit 1; }
+    log "creada la tabla $1 en rqlite"
+    OK=1
+  fi
+}
+prepara_tabla cripto_vela "$TABLA"; TABLA_OK=$OK
+prepara_tabla cripto_indicador "$TABLA_IND"; IND_OK=$OK
+prepara_tabla cripto_fibonacci "$TABLA_FIB"
 
 final=0
 for P in $PRODUCTOS; do

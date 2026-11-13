@@ -2,7 +2,10 @@
 //
 // 1. NUESTRO CALCULO (estricto): la semana de lunes y la Heikin Ashi diaria y
 //    semanal se rehacen aqui desde las velas diarias guardadas y tienen que dar
-//    exactamente lo mismo que lo guardado.
+//    exactamente lo mismo que lo guardado. Los indicadores (cripto_indicador)
+//    se rehacen con indicadores-ref.js desde las velas guardadas y tambien
+//    tienen que coincidir todos. Y los niveles de Fibonacci (cripto_fibonacci),
+//    con fibonacci-ref.js.
 //
 // 2. LOS DATOS DE COINBASE, contra fuentes que el script NO usa:
 //    - BTC-USD (spot): la API Exchange (api.exchange.coinbase.com,
@@ -24,6 +27,8 @@
 // Uso: node contra-coinbase.js <url-rqlite> <fichero curlrc> [producto]   (BTC-USD por defecto)
 'use strict';
 const fs = require('fs');
+const IR = require('./indicadores-ref');
+const FR = require('./fibonacci-ref');
 const [rq, curlrc, producto = 'BTC-USD'] = process.argv.slice(2);
 const cred = fs.readFileSync(curlrc, 'utf8').match(/user\s*=\s*"([^"]+)"/)[1];
 const H = { 'User-Agent': 'sentinel-btc-velas/1.0' };
@@ -88,6 +93,39 @@ const igualOHLC = (a, b) => ['o', 'h', 'l', 'c'].every(k => Math.abs(a[k] - b[k]
   console.log(`calculo: ${sem.length - wMal} de ${sem.length} semanas y ${haVistas - haMal} de ${haVistas} Heikin Ashi iguales a las rehechas desde las diarias guardadas`);
   wEj.concat(haEj).forEach(s => console.log('  distinta: ' + s));
   if (wMal || haMal || !haVistas) fallo = 1;
+
+  // Indicadores, rehechos desde las velas guardadas.
+  const ri = await fetch(rq + '/db/query?level=strong', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Basic ' + Buffer.from(cred).toString('base64') }, body: JSON.stringify([[IR.SQL, producto]]) });
+  const ji = (await ri.json()).results[0];
+  if (ji.error) { console.log('indicadores: ' + ji.error); fallo = 1; } else {
+    const iGot = (ji.values || []).map(IR.deFila);
+    const vs = [];
+    for (const [mapa, marco] of [[d, '1d'], [w, '1w']]) for (const x of mapa.values()) vs.push({ marco, ts: x.t, c: x.c, hc: x.hc, cerrada: x.cerrada });
+    const iExp = IR.indicadores(vs);
+    const iMal = IR.compara(iGot, iExp, 5);
+    const ultima = iExp.filter(x => x.marco === '1d' && x.base === 'real' && x.cerrada).pop();
+    console.log(`indicadores: ${iGot.length} guardados, ${iExp.length} rehechos desde las velas guardadas, ${iMal.length ? 'NO coinciden' : 'todos iguales'}`);
+    iMal.forEach(s => console.log('  distinto: ' + s));
+    if (ultima) console.log(`  ultima diaria cerrada (${f(ultima.ts)}, real): EMA100 ${ultima.ema100?.toFixed(2)}, EMA200 ${ultima.ema200?.toFixed(2)}, Bollinger ${ultima.bb_inf?.toFixed(2)}-${ultima.bb_sup?.toFixed(2)}, canal ${ultima.rl_inf?.toFixed(2)}-${ultima.rl_sup?.toFixed(2)} (pendiente ${ultima.rl_pendiente?.toFixed(2)}/dia), ruptura ${ultima.rl_ruptura}`);
+    if (iMal.length || !iGot.length) fallo = 1;
+  }
+
+  // Fibonacci, rehecho desde las velas diarias guardadas.
+  const rf = await fetch(rq + '/db/query?level=strong', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Basic ' + Buffer.from(cred).toString('base64') }, body: JSON.stringify([[FR.SQL, producto]]) });
+  const jf = (await rf.json()).results[0];
+  if (jf.error) { console.log('fibonacci: ' + jf.error); fallo = 1; } else {
+    const fGot = (jf.values || []).map(FR.deFila);
+    const fExp = FR.fibonacci([...d.values()].map(x => ({ marco: '1d', ts: x.t, h: x.h, l: x.l, c: x.c })));
+    const fMal = FR.compara(fGot, fExp, 5);
+    if (fGot.some(g => g.tramo !== 'ciclo')) fMal.push('hay filas de un tramo que no es ciclo');
+    console.log(`fibonacci: ${fGot.length} niveles guardados, ${fExp ? `ciclo ${fExp.bajo} (${f(fExp.bajo_ts)}) -> ${fExp.alto} (${f(fExp.alto_ts)}), caida ${(100 * fExp.caida).toFixed(1)} %` : 'sin ciclo'} rehecho desde las velas guardadas, ${fMal.length ? 'NO coinciden' : 'todo igual'}`);
+    fMal.forEach(s => console.log('  distinto: ' + s));
+    if (fExp) {
+      const hoy = [...d.values()].pop();
+      console.log('  niveles: ' + fExp.niveles.map(n => `${(100 * n.nivel).toFixed(1)} % ${n.precio.toFixed(2)}`).join(', ') + `; ultimo cierre ${hoy.c} (${f(hoy.t)}) en el ${(100 * (fExp.alto - hoy.c) / (fExp.alto - fExp.bajo)).toFixed(1)} %`);
+    }
+    if (fMal.length) fallo = 1;
+  }
 
   // ---- 2. Datos de Coinbase contra otra fuente ----
   const ref = new Map();
