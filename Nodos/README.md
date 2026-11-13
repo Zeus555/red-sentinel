@@ -27,7 +27,7 @@ quedan como *sin determinar*: sondearlos cuando vuelvan con
 | sentinel005 | 192.168.0.166  | node3          | T-Mobile REVVL V+ 5G `Sprout`, de Wingtech (Dimensity 700 / MT6833, Android 12) |                                  |
 | sentinel009 | 192.168.0.154  | node4          | Amazon Fire HD 8 12.ª gen `KFRAWI` / `raspite` (MT8169, Fire OS 8.3.3.8) | gemela física de 010 |
 | sentinel010 | 192.168.0.34   | node5          | Amazon Fire HD 8 12.ª gen `KFRAWI` / `raspite` (MT8169, Fire OS 8.3.3.8) | líder rqlite habitual · gemela física de 009 |
-| sentinel014 | 192.168.0.21   | node6          | — no es teléfono (Ubuntu 24.04)  | rqlite en Ubuntu 24.04 (systemd user), **RPA Monitor Extron** (ciclo 2×/día + dashboard :3008) |
+| sentinel014 | 192.168.0.21   | node6          | — no es teléfono (Ubuntu 24.04)  | rqlite en Ubuntu 24.04 (systemd user), **RPA Monitor Extron** (ciclo 2×/día + dashboard :3008), **Monitoreo de BTC** (cada 5 min, Servicio 11) |
 | sentinel016 | 192.168.0.159  | node7          | — no es teléfono (Ubuntu 24.04)  | rqlite en Ubuntu 24.04 (systemd user), prc-agent-jupiter (Docker, wallet Phantom) |
 | sentinel017 | 192.168.0.22   | node8          | Motorola moto g play 2024 `fogona` (Qualcomm Snapdragon, plataforma `bengal`, Android 14) | unido 2026-07-17 |
 | sentinel018 | 192.168.0.130  | node10         | Samsung Galaxy A20 `SM-A205U` / `a20p` (Samsung Exynos 7904, Android 10) | detectado en auditoría remota 2026-07-21 (reporta telemetría battery) |
@@ -1002,6 +1002,22 @@ apagón, internet caído o el Wheel con el cron parado.
 - Comprobar: `ssh batchtoday 'cat ~/sentinel-latido/*.latido ~/sentinel-latido/vigilar.state'`
   (cada `.latido`: recibido, nodo, última pasada, Wheel, pendientes, readyz).
 - Si se cambia el bot de Telegram, actualizar también `telegram.conf` de la EC2.
+
+## Servicio 11: Monitoreo de BTC (sentinel014) — [`btc/`](../btc)
+
+Velas diarias y semanales de BTC en Coinbase (el perpetuo de futuros
+`BIP-20DEC30-CDE` y el spot `BTC-USD`), con Heikin Ashi, indicadores y Fibonacci,
+en las tablas `cripto_vela`, `cripto_indicador` y `cripto_fibonacci` del rqlite.
+
+- Corre en **sentinel014** con el temporizador de usuario `sentinel-btc-velas`:
+  una pasada cada 5 min (minutos 2, 7, 12… y segundo 30, en UTC) desde el
+  13/11/2026. Código en `~/PRC_Sentinel/v2/btc/`; log en
+  `~/PRC_Sentinel/btc/velas.log`.
+- Una pasada normal: ~1,5 s y 4 entradas de Raft (~0,8 por minuto en total).
+- Instalar, actualizar, mirar y quitar: [`btc/README.md`](../btc/README.md),
+  sección «Dónde corre».
+- Todavía no lo vigila nadie: ni `Sentinel-Alert.sh` ni el latido. El README trae
+  la consulta de frescura que hay que mirar a mano mientras tanto.
 
 ## Credenciales de Bright Data
 

@@ -1,0 +1,13 @@
+[Unit]
+Description=Sentinel BTC - una pasada cada 5 min (solo en sentinel014)
+
+[Timer]
+# Minutos 2, 7, 12... y segundo 30, en UTC como las velas: la pasada de las
+# 00:02:30 cierra la vela de ayer con sus valores definitivos. Hoy no coincide
+# con los otros timers del equipo (alert, latido, elect y watchdog), aunque su
+# fase depende de la hora de arranque; si coinciden, no pasa nada.
+OnCalendar=*-*-* *:02/5:30 UTC
+AccuracySec=1s
+
+[Install]
+WantedBy=timers.target

@@ -291,7 +291,8 @@ guardadas, coinciden en todas las filas de las dos series.
 
 ## Pruebas
 
-`btc/pruebas/pruebas-velas.sh`: 191 pruebas, todas pasan. El Coinbase falso
+`btc/pruebas/pruebas-velas.sh`: 196 pruebas, todas pasan, en la laptop (270 s)
+y en sentinel014 con su `sh`, que es dash (87 s; el 13/11/2026). El Coinbase falso
 sirve también un perpetuo con saltos de $5 que empieza un viernes. Cubren:
 - Heikin Ashi y semanas, con números hechos a mano.
 - El lector de Coinbase.
@@ -323,7 +324,9 @@ sirve también un perpetuo con saltos de $5 que empieza un viernes. Cubren:
   - huecos;
   - fallos de Coinbase y de rqlite;
   - reloj atrasado;
-  - cerrojo;
+  - cerrojo: el de otra pasada se respeta y deja una línea en el log; el que
+    quedó puesto hace más de 30 min se libera;
+  - un `--completo` que falla a mitad pide repetirlo;
   - ventanas vacías;
   - que ninguna petición a Coinbase lleve credenciales.
 
@@ -349,34 +352,117 @@ prueba: con ellas, las 46 se detectan.
 
 ## Uso
 
+Lo normal es no hacer nada: el temporizador de sentinel014 hace una pasada cada
+5 min (ver «Dónde corre»).
+
 ```sh
-# Desde un equipo que no es nodo de rqlite (p. ej. la laptop):
-RQLITE=http://192.168.0.21:4001 sh btc/Sentinel-BTC-Velas.sh
-# Otras opciones:
-sh btc/Sentinel-BTC-Velas.sh --seco       # calcula sin escribir; deja los lotes en ~/PRC_Sentinel/btc/seco/
-sh btc/Sentinel-BTC-Velas.sh --completo   # vuelve a bajar y escribir toda la historia
-sh btc/pruebas/pruebas-velas.sh           # banco de pruebas (necesita node y rqlited)
+# Una pasada a mano: en 014, por el mismo servicio (nunca se solapa con el temporizador)
+ssh sentinel014 systemctl --user start sentinel-btc-velas.service
+# Toda la historia otra vez, también en 014 (comparte el cerrojo con el temporizador)
+ssh sentinel014 sh PRC_Sentinel/v2/btc/Sentinel-BTC-Velas.sh --completo
+# Desde la laptop: calcular sin escribir (deja los lotes en ~/PRC_Sentinel/btc/seco/)
+RQLITE=http://192.168.0.21:4001 sh btc/Sentinel-BTC-Velas.sh --seco
+# Banco de pruebas (necesita node y rqlited)
+sh btc/pruebas/pruebas-velas.sh
 ```
+
+**Desde la laptop, mejor no escribir.** El cerrojo es de cada equipo: la laptop
+no ve el de 014. Una pasada normal desde la laptop, con el mismo código que hay
+en 014 y lejos de las 00:00 UTC, no hace daño. Pero un `--completo` o un código
+con otra `VERSION` de los indicadores, con el temporizador en marcha, hacen que
+las dos se pisen: 014 acaba rehaciendo todo y los indicadores quedan un rato a
+medias. Para probar código nuevo contra la red: parar antes el temporizador o
+desplegarlo primero en 014.
 
 **Credenciales.** Usa `~/.config/rqlite/sentinel.curlrc`, el usuario `sentinel`
 (execute y query). Las peticiones a Coinbase van con `curl -q`, así que nunca
 leen un curlrc y nunca llevan credenciales.
 
-**Escrituras.** Una pasada normal reescribe solo los últimos 3 días, el de hoy y
-1 o 2 semanas: unas 7 filas de velas y 14 de indicadores por producto, en 1
-entrada de Raft. Fibonacci va en otra: el borrado y los 7 niveles del spot, y en
-el perpetuo solo el borrado. Además lee toda la serie diaria, unos 230 KB, y cuenta los
-indicadores guardados, las dos cosas a través del líder. La carga inicial va en
-lotes de 200 con `?transaction`.
+**Escrituras.** Una pasada normal reescribe los 4 últimos días cerrados, el de
+hoy y 1 o 2 semanas: 6 o 7 filas de velas y 12 o 14 de indicadores por
+producto, en 1 entrada de Raft. Fibonacci va en otra: el borrado y los 7 niveles
+del spot, y en el perpetuo solo el borrado. En total, 4 entradas de Raft y unos
+18 KB por pasada: cada 5 min son ~0,8 entradas por minuto, frente a las ~35 de
+base de la red. Además lee la serie diaria (unos 230 KB del spot y 22 KB del
+perpetuo) y cuenta los indicadores guardados, a través del líder. La carga
+completa va en lotes de 200 con `?transaction`: ~80 lotes y 29 s en 014.
 
-**Un solo nodo.** El cerrojo es local, así que el cron debe ir en un solo nodo.
-Si `sentinel.conf` define `BTC_NODOS="sentinelNNN"`, los demás nodos salen sin
-hacer nada. Con dos nodos a la vez la base no se rompe, pero cerca de las 00:00
-UTC uno con el reloj algo atrasado podría reabrir la vela de ayer durante una
-pasada. Cada 5 a 15 minutos basta: las velas son diarias.
+**Un solo nodo.** El cron va en un solo nodo. Si `sentinel.conf` define
+`BTC_NODOS="sentinelNNN"`, los demás nodos salen sin hacer nada. Con dos nodos a
+la vez la base no se rompe, pero cerca de las 00:00 UTC un reloj desfasado hace
+cosas raras durante unos minutos. Uno atrasado puede reabrir la vela de ayer. Uno
+adelantado más de 1 min puede cerrar la de hoy antes de tiempo, y deja en el log
+un aviso falso de «Coinbase cambio».
+
+## Dónde corre
+
+En **sentinel014**, con un temporizador de systemd de usuario, como el latido.
+Es el Ubuntu siempre encendido de la red, con el reloj sincronizado (NTP), y hoy
+el líder de rqlite: escribe y lee en local.
+
+| Pieza | En 014 |
+|---|---|
+| `servicio/sentinel-btc-velas.timer` | Una pasada cada 5 min: minutos 2, 7, 12… y segundo 30, en UTC. La de las 00:02:30 cierra la vela de ayer. |
+| `servicio/sentinel-btc-velas.service` | La pasada: `/bin/sh ~/PRC_Sentinel/v2/btc/Sentinel-BTC-Velas.sh`, con `Nice=10` (por debajo de rqlited) y un tope de 20 min. |
+| `~/PRC_Sentinel/v2/btc/` | El script y los cuatro awk. |
+| `~/PRC_Sentinel/btc/` | `velas.log` (las últimas 1.000 líneas, unos 2 días) y el cerrojo. Más atrás, en el journal. |
+
+Usa lo que ya hay en 014: `RQLITE=http://127.0.0.1:4001` de su `sentinel.conf`
+y `~/.config/rqlite/sentinel.curlrc`. Una pasada normal tarda ~1,5 s y 0,6 s de
+CPU.
+
+**Instalar o actualizar**, desde Git Bash en la raíz del repo de la laptop (no
+desde PowerShell, que estropea la tubería):
+
+```sh
+git -c core.autocrlf=false archive HEAD btc/Sentinel-BTC-Velas.sh btc/velas-calculo.awk btc/indicadores-calculo.awk btc/fibonacci-calculo.awk btc/coinbase-velas.awk btc/servicio | ssh sentinel014 'set -e; d=$(mktemp -d); tar -x -C "$d"; systemctl --user stop sentinel-btc-velas.timer sentinel-btc-velas.service 2>/dev/null || true; mkdir -p ~/PRC_Sentinel/v2/btc; cp "$d"/btc/Sentinel-BTC-Velas.sh "$d"/btc/*.awk ~/PRC_Sentinel/v2/btc/; cp "$d"/btc/servicio/sentinel-btc-velas.* ~/.config/systemd/user/; rm -rf "$d"; systemctl --user daemon-reload; systemctl --user enable --now sentinel-btc-velas.timer'
+```
+
+- Si el `git archive` falla, el `set -e` corta antes de parar nada.
+- Para el temporizador y una pasada en curso antes de cambiar los ficheros.
+- Ojo con el `-c core.autocrlf=false`: en la laptop `core.autocrlf` está a `true`
+  y, sin él, `git archive` manda los ficheros con finales CRLF, que dash no
+  entiende.
+- Comprobar después que el `md5sum` de lo copiado en 014 es el de
+  `git show HEAD:<fichero> | md5sum`.
+
+**Volver atrás:** el mismo comando con el commit anterior en lugar de `HEAD`. Si
+ese commit tiene otra `VERSION` de los indicadores, la primera pasada los
+reescribe enteros (~1 min): mirar el log.
+
+**Quitar:** en 014,
+`systemctl --user disable --now sentinel-btc-velas.timer`, borrar las dos
+unidades de `~/.config/systemd/user/` y `systemctl --user daemon-reload`. Las
+tablas se quedan como estaban.
+
+**Mirar cómo va**, en 014:
+
+```sh
+systemctl --user list-timers sentinel-btc-velas.timer    # próxima y última pasada
+systemctl --user status sentinel-btc-velas.service       # código de la última
+tail ~/PRC_Sentinel/btc/velas.log
+journalctl --user -u sentinel-btc-velas -n 30
+```
+
+Y desde la laptop, sin entrar en 014: cuántos segundos hace que se escribió la
+vela de hoy. Cada pasada buena la reescribe, así que más de 900 s (3 pasadas)
+quiere decir que algo falla: la pasada, el temporizador o el propio 014.
+
+```sh
+curl -q -s -K ~/.config/rqlite/lector.curlrc -G http://192.168.0.21:4001/db/query --data-urlencode "q=SELECT producto, strftime('%s','now') - MAX(actualizado) FROM cripto_vela WHERE marco='1d' GROUP BY producto"
+```
+
+Mientras no haya avisos, nadie avisa si se para. Un cerrojo que quedó puesto
+(corte de luz en mitad de una pasada) se libera solo a los 30 min. Saltar una
+pasada por el cerrojo y liberarlo quedan en `velas.log`.
+
+**`contra-coinbase.js` con el temporizador en marcha.** Lee en cuatro
+peticiones. Si una pasada entra entre ellas, puede dar «no coinciden» en la vela
+de hoy o en su semana. Mejor lanzarlo fuera de los minutos 2-3 y 7-8, y
+repetirlo si eso es lo único que sale.
 
 ## Pendiente
 
-- Decidir dónde y cada cuánto corre: qué nodo y con qué cron. Por ahora se corre
-  a mano.
-- Avisos.
+- Avisos. Lo primero, que `Sentinel-Alert.sh` mire la consulta de frescura de
+  arriba (más de 15 min sin escribir la vela de hoy): cubre una pasada que falla,
+  el temporizador parado y 014 caído.

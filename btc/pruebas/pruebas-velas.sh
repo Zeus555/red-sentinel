@@ -649,6 +649,19 @@ if [ "${libres:-0}" = 1 ]; then
   corre $AHORA1; r=$?
   igual "C11b si el cerrojo no se puede crear (hay un fichero) sale con 1, no con 'otra pasada'" "1" "$r"
   rm -f "$T/dir/.velas.lock"
+  # Un cerrojo que quedo puesto (corte de luz, kill -9) se libera a los 30 min,
+  # y las dos cosas, saltar y liberar, quedan en velas.log.
+  L="$T/dir/velas.log"
+  mkdir "$T/dir/.velas.lock"; touch -d '-20 minutes' "$T/dir/.velas.lock"
+  n0=$(grep -c 'ya hay otra pasada en curso' "$L"); antes=$(huella); corre $((AHORA1 + 31)); r=$?
+  igual "C11j un cerrojo de 20 min se respeta: no escribe nada y lo deja en velas.log" "0|$antes|$((n0 + 1))" "$r|$(huella)|$(grep -c 'ya hay otra pasada en curso' "$L")"
+  touch -d '-40 minutes' "$T/dir/.velas.lock"
+  corre $((AHORA1 + 61)); r=$?
+  igual "C11j uno de 40 min es de una pasada muerta: lo libera, lo dice en velas.log y hace la pasada" "0 si no" \
+    "$r $(grep -q 'libero un cerrojo de mas de 30 min' "$L" && echo si || echo no) $([ -d "$T/dir/.velas.lock" ] && echo si || echo no)"
+  n=$(sql1 "SELECT COUNT(*) FROM cripto_vela WHERE actualizado=$((AHORA1 + 61))")
+  [ "${n:-0}" -gt 0 ] && pasa "C11j ...y escribe ($n velas)" || falla "C11j ...y escribe" "$n; $(cat "$T/salida")"
+  rmdir "$T/dir/.velas.lock" 2>/dev/null
 
   # Una copia a medias de btc/ (sin el awk de los indicadores) no escribe nada.
   mkdir -p "$T/btc2"; cp "$SCRIPT" "$CALC" "$LECTOR" "$FIB" "$T/btc2/"
@@ -706,7 +719,13 @@ if [ "${libres:-0}" = 1 ]; then
   ejecuta '[["DROP TABLE cripto_vela"],["CREATE TABLE cripto_vela (producto TEXT NOT NULL, marco TEXT NOT NULL, ts INTEGER NOT NULL, apertura REAL NOT NULL, maximo REAL NOT NULL, minimo REAL NOT NULL, cierre REAL NOT NULL, volumen REAL NOT NULL, ha_apertura REAL, ha_maximo REAL, ha_minimo REAL, ha_cierre REAL, cerrada INTEGER NOT NULL, fuente TEXT, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, marco, ts)) WITHOUT ROWID"]]'
   corre $AHORA1; r=$?
   igual "C14 un error de SQL dentro de un 200 de rqlite: sale con 1" "1" "$r"
-  grep -q 'fallo al escribir' "$T/salida" && pasa "C14 lo explica" || falla "C14 lo explica" "$(cat "$T/salida")"
+  grep -q 'fallo al escribir.*la proxima pasada completa el resto' "$T/salida" && pasa "C14 lo explica" || falla "C14 lo explica" "$(cat "$T/salida")"
+  # En un --completo la pasada siguiente NO lo arregla: hay que repetirlo.
+  corre $AHORA1 --completo; r=$?
+  igual "C14b lo mismo en un --completo: sale con 1" "1" "$r"
+  if grep -q 'fallo al escribir.*repite --completo' "$T/salida" && ! grep -q 'la proxima pasada completa' "$T/salida"; then
+    pasa "C14b ...y pide repetir el --completo en vez de esperar a la pasada siguiente"
+  else falla "C14b pide repetir el --completo" "$(cat "$T/salida")"; fi
 
   # Una ventana vacia en medio de la historia no puede recortar la carga completa.
   ejecuta '[["DROP TABLE cripto_vela"]]'

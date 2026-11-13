@@ -39,8 +39,9 @@
 #      su propia historia: hoy solo BTC-USD tiene un bajista ya superado; el
 #      perpetuo tendra el suyo el dia que supere su ATH de oct-2025.
 #   5. Escribe solo las filas que pueden haber cambiado, en lotes con
-#      ?transaction. Una pasada sin novedades reescribe 3-4 dias y 1-2 semanas
-#      de velas, y lo mismo de indicadores por dos (real y Heikin Ashi). Los
+#      ?transaction. Una pasada sin novedades reescribe los 4 ultimos dias
+#      cerrados, el de hoy y 1-2 semanas de velas (6-7 filas), y el doble de
+#      indicadores (real y Heikin Ashi), en un solo lote por producto. Los
 #      niveles de Fibonacci se rehacen enteros en cada pasada, aparte, en una
 #      sola transaccion.
 #
@@ -159,8 +160,11 @@ done
 # transaccion y escribir la misma vela dos veces da lo mismo), pero cerca de las
 # 00:00 UTC uno con el reloj algo atrasado puede devolver durante una pasada la
 # vela de ayer a cerrada=0. Por eso el cron va en un solo nodo (BTC_NODOS).
-# Un cerrojo de mas de 2 h es de una pasada que murio sin limpiar (corte de luz,
-# kill -9): se libera.
+# Un cerrojo de mas de 30 min es de una pasada que murio sin limpiar (corte de
+# luz, kill -9): se libera. Una pasada normal tarda segundos, la carga completa
+# menos de un minuto, y el temporizador corta cualquiera a los 20 min. Si alguna
+# vez se libera el de una pasada viva, dos a la vez no rompen la base (arriba).
+# Las dos cosas, saltar y liberar, quedan en el log.
 LOCK="$DIR/.velas.lock"
 if ! mkdir "$LOCK" 2>/dev/null; then
   if [ ! -d "$LOCK" ]; then
@@ -168,10 +172,11 @@ if ! mkdir "$LOCK" 2>/dev/null; then
     # FICHERO con ese nombre). Un reintento cubre la carrera con otra pasada que
     # justo acaba de soltar el cerrojo.
     mkdir "$LOCK" 2>/dev/null || { log "ERROR no puedo crear el cerrojo $LOCK (sin permiso, sin espacio o hay un fichero con ese nombre)"; exit 1; }
-  elif [ -n "$(find "$LOCK" -maxdepth 0 -mmin +120 2>/dev/null)" ]; then
+  elif [ -n "$(find "$LOCK" -maxdepth 0 -mmin +30 2>/dev/null)" ]; then
+    log "AVISO: libero un cerrojo de mas de 30 min ($LOCK): una pasada anterior murio sin limpiar"
     rmdir "$LOCK" 2>/dev/null; mkdir "$LOCK" 2>/dev/null || exit 0
   else
-    printf 'ya hay otra pasada en curso (%s)\n' "$LOCK"; exit 0
+    log "ya hay otra pasada en curso ($LOCK): no hago nada"; exit 0
   fi
 fi
 TMPD=$(mktemp -d "${TMPDIR:-/tmp}/btcvelas.XXXXXX") || { rmdir "$LOCK"; exit 1; }
@@ -448,9 +453,17 @@ procesa(){
     for f in "$TMPD"/lote.*.json; do [ -e "$f" ] && cp "$f" "$DIR/seco/$P.${f##*/lote.}"; done
     cp "$TMPD/fib.json" "$DIR/seco/$P.fibonacci.json"
   else
+    # Una pasada normal se arregla sola en la siguiente. Un --completo cortado
+    # no: la siguiente solo reescribe los ultimos dias, y las velas de despues
+    # del lote que fallo se quedan con la Heikin Ashi y la semana de antes.
+    if [ "$MODO" = completo ]; then
+      SIGUE="repite --completo: las velas de despues de este lote siguen con la Heikin Ashi y la semana de antes"
+    else
+      SIGUE="lo que ya entro es valido y la proxima pasada completa el resto"
+    fi
     for f in "$TMPD"/lote.*.json; do
       [ -e "$f" ] || continue
-      rq 'execute?transaction' "$f" || { log "ERROR $P: fallo al escribir ${f##*/} ($ERRMSG); lo que ya entro es valido y la proxima pasada completa el resto"; return 1; }
+      rq 'execute?transaction' "$f" || { log "ERROR $P: fallo al escribir ${f##*/} ($ERRMSG); $SIGUE"; return 1; }
     done
     # Fibonacci va aparte, despues de las velas de las que sale, y en una sola
     # transaccion: o quedan los niveles nuevos o siguen los de antes. Se rehace

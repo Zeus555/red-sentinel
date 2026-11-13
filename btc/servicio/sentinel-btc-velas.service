@@ -1,0 +1,11 @@
+[Unit]
+Description=Sentinel BTC - velas, indicadores y Fibonacci de BTC en rqlite (una pasada)
+
+[Service]
+Type=oneshot
+ExecStart=/bin/sh %h/PRC_Sentinel/v2/btc/Sentinel-BTC-Velas.sh
+# Por debajo de rqlited, que corre en el mismo equipo.
+Nice=10
+# Una pasada normal tarda segundos y la carga completa, menos de un minuto. Con
+# Coinbase o rqlite colgados, cada curl tiene su propio tope (30 s y 60 s).
+TimeoutStartSec=20min
