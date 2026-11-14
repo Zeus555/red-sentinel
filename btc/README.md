@@ -1,4 +1,4 @@
-# Monitoreo de BTC (Coinbase: futuros y spot)
+# Monitoreo de BTC y del Tech 100 (Coinbase: futuros y spot)
 
 Servicio nuevo de la red Sentinel, hecho desde cero el 12/11/2026.
 
@@ -12,6 +12,10 @@ Lo que hace hoy, todo guardado en el rqlite de la red:
   ruptura del canal, cruces con las EMA y entre ellas, niveles de Fibonacci y
   cambio de color del Heikin Ashi, del perpetuo en diaria y semanal.
 
+Desde el 14/11/2026 sigue también el **Tech 100** de Coinbase Derivatives
+(`TEK-19DEC30-CDE`), con sus propias velas, indicadores y señales (ver «El
+Tech 100»).
+
 Y si deja de escribir, el Wheel de la red avisa por Telegram (ver «Señales»).
 
 ## Series
@@ -20,8 +24,9 @@ Y si deja de escribir, el Wheel de la red avisa por Telegram (ver «Señales»).
 |---|---|---|---|
 | `BIP-20DEC30-CDE` | El perpetuo de futuros de BTC de Coinbase en EE. UU. ("nano BTC Perp": 0,01 BTC por contrato, precios en saltos de $5, sin vencimiento hasta dic-2030). | 18/07/2025 (~70 semanas) | La serie para operar, también en corto. |
 | `BTC-USD` | El spot. | 20/07/2015 (~590 semanas) | Lo que necesita historia larga y el perpetuo no tiene. La EMA 100 semanal pide 100 semanas y la EMA 200, 200. |
+| `TEK-19DEC30-CDE` | El perpetuo del «Tech 100» de Coinbase Derivatives: 1 $ por punto del MarketVector US Listed Innovators 100 (no es el Nasdaq-100: vale ~3.700). Solo de lunes a viernes. | 15/06/2026 (~22 semanas) | Un índice tecnológico de EE. UU. que se puede operar en corto, regulado por la CFTC. |
 
-Las dos van por defecto (`BTC_PRODUCTOS`). En la semana del 09/11/2026 el
+Las tres van por defecto (`BTC_PRODUCTOS`). En la semana del 09/11/2026 el
 perpetuo y el spot cerraban a menos de $25 uno del otro.
 
 **Volumen.** En el perpetuo va en **contratos**, no en BTC: 1 contrato son 0,01
@@ -38,6 +43,33 @@ diferencias se informan. Comprobado el 12/11/2026:
 - **Volumen:** difiere entre todas las granularidades.
 
 Los días recientes coinciden exactos en todas.
+
+## El Tech 100
+
+Lo pidió el dueño el 13/11/2026, después de ver que los perpetuos de acciones
+sueltas (Apple, Nvidia) aún no se pueden operar desde EE. UU.
+
+- **Qué es.** `TEK-19DEC30-CDE`, «Tech 100 Perpetual» en Coinbase. Sigue al
+  MarketVector US Listed Innovators 100 (MVIN100): las 100 mayores del Nasdaq
+  sin financieras, con tope del 30 % por empresa; Apple, Nvidia y Microsoft
+  pesan 10-14 % cada una. Perpetuo de verdad desde el 26/10/2026 (el «19DEC30»
+  del nombre es solo una referencia).
+- **Calendario.** Cotiza de domingo 19:00 CT a viernes 16:00 CT, sin pausa
+  diaria. En UTC son velas de **lunes a viernes**, y ninguna los festivos de
+  bolsa de EE. UU. Por eso va en `BTC_LABORABLES`: el sábado y el domingo no son
+  huecos (un festivo sí: Coinbase no trae su vela), y **la vela semanal se cierra
+  al acabar el viernes** (sábado 00:00 UTC), así que su señal semanal sale en la
+  pasada del sábado a las 00:02:30 UTC y no el lunes.
+- **Historia.** Desde el 15/06/2026: ~107 velas diarias y ~22 semanales al
+  14/11/2026. Alcanza para la EMA 100 diaria, no para la EMA 200 diaria ni para
+  las semanales, ni para el canal semanal. Fibonacci no tiene ciclo (hace falta
+  un mercado bajista ya superado). Todo eso sale `null` y aparece solo cuando
+  haya velas.
+- **Va solo.** No hay en Coinbase una serie larga del mismo índice, así que su
+  grupo de señales es solo él (no hay un «spot» detrás, como en BTC).
+- **La primera pasada** baja su historia (3 peticiones) y manda, si las hay, sus
+  señales de las últimas 36 h: en `cripto_aviso` ya existía la tabla, así que
+  no se guardan como «ya enviadas».
 
 ## Ficheros
 
@@ -308,9 +340,26 @@ Lo manda sentinel014.
 salido 41: unas 5 por semana, la mayoría cambios de color del Heikin Ashi
 diario.
 
-**Tabla `cripto_aviso`.** Una fila por señal: `marco`, `ts` (de la vela) y
-`tipo` son la clave, así que una señal calculada otra vez en la pasada siguiente
-no se duplica ni se vuelve a mandar. Además lleva `producto` (la serie de la que
+**Grupos.** `BTC_AVISOS` lleva un grupo por activo, separados por comas: por
+defecto `BIP-20DEC30-CDE BTC-USD, TEK-19DEC30-CDE` (BTC, con el spot de
+respaldo, y el Tech 100). Cada grupo se calcula aparte y solo si todos sus
+productos salieron bien en la pasada; si un grupo falla, los demás siguen. El
+mensaje lleva una parte por grupo, en ese orden:
+
+```
+📊 BTC: señales al cierre
+• 🔴 Perpetuo, diaria del 13/11: la vela Heikin Ashi pasa a roja
+
+📊 Tech 100: señales al cierre
+• 🟢 Tech 100, diaria del 13/11: la vela Heikin Ashi pasa a verde
+Lo manda sentinel014.
+```
+
+**Tabla `cripto_aviso`.** Una fila por señal: `grupo` (el producto principal
+del grupo: `BIP-20DEC30-CDE` para BTC, `TEK-19DEC30-CDE` para el Tech 100),
+`marco`, `ts` (de la vela) y `tipo` son la clave, así que una señal calculada
+otra vez en la pasada siguiente no se duplica ni se vuelve a mandar, y la de
+BTC y la del Tech 100 de la misma vela no chocan. Además lleva `producto` (la serie de la que
 sale), `sentido` (1 arriba, −1 abajo), `precio` (el cierre), `nivel` (lo
 cruzado: la EMA, el borde del canal, el primer nivel de Fibonacci o el cierre
 Heikin Ashi), `texto` (la línea del mensaje), `creado` y `enviado`:
@@ -324,6 +373,33 @@ Heikin Ashi), `texto` (la línea del mensaje), `creado` y `enviado`:
   `BTC_AVISO_HORAS` (36) ya no sirve para operar (p. ej. tras días sin
   Telegram).
 
+**La tabla de antes de los grupos.** Hasta el 14/11/2026 la clave era `(marco,
+ts, tipo)`. La primera pasada con el script nuevo la migra sola, una vez y en
+una transacción: crea `cripto_aviso_nueva`, copia todas las filas con el grupo
+de su producto (las de `BIP-20DEC30-CDE` y `BTC-USD`, a `BIP-20DEC30-CDE`),
+borra la vieja y renombra la nueva. Si falla, la tabla sigue como estaba, las
+señales no salen en esa pasada (sale con 1, y el Wheel avisa si dura) y la
+siguiente lo reintenta. Con `--seco` no se toca.
+
+**Sin vuelta atrás automática.** Un script de antes del 14/11 (un `.bak`, un
+checkout viejo en la laptop) ya no puede escribir en la tabla migrada: su
+INSERT no lleva `grupo` y falla. Para volver al script viejo hay que deshacer
+la migración a mano, quedándose solo con las de BTC (en la clave vieja, las de
+los dos grupos chocarían):
+
+```sql
+CREATE TABLE cripto_aviso_vieja (marco TEXT NOT NULL, ts INTEGER NOT NULL, tipo TEXT NOT NULL, producto TEXT NOT NULL, sentido INTEGER NOT NULL, precio REAL NOT NULL, nivel REAL, texto TEXT NOT NULL, creado INTEGER NOT NULL, enviado INTEGER, PRIMARY KEY (marco, ts, tipo)) WITHOUT ROWID;
+INSERT INTO cripto_aviso_vieja SELECT marco, ts, tipo, producto, sentido, precio, nivel, texto, creado, enviado FROM cripto_aviso WHERE grupo = 'BIP-20DEC30-CDE';
+DROP TABLE cripto_aviso;
+ALTER TABLE cripto_aviso_vieja RENAME TO cripto_aviso;
+```
+
+(las cuatro en una sola petición con `?transaction`).
+
+**El principal de cada grupo es su clave.** Si se cambia el orden de un grupo
+en `BTC_AVISOS` (p. ej. `BTC-USD BIP-…`), sus señales de los últimos 7 días
+entran otra vez con la clave nueva, y se vuelven a mandar las de menos de 36 h.
+
 **Escrituras.** En cada pasada se recalculan los últimos 7 días, pero solo se
 escriben las señales que no estaban: sin nada nuevo, las señales no añaden
 ninguna entrada de Raft.
@@ -333,9 +409,10 @@ ninguna entrada de Raft.
   la siguiente lo reintenta.
 - **Se manda pero no se puede marcar** (rqlite): la pasada siguiente lo repite.
   Mejor repetida que perdida.
-- **Un producto falla en la pasada:** las señales no se calculan (el reparto
-  entre perpetuo y spot saldría mal), pero las pendientes se mandan igual, y la
-  pasada sale con 3. La siguiente recalcula los últimos 7 días.
+- **Un producto falla en la pasada:** las señales de SU grupo no se calculan
+  (en BTC, el reparto entre perpetuo y spot saldría mal); las de los otros
+  grupos sí. Las pendientes se mandan igual y la pasada sale con 3. La siguiente
+  recalcula los últimos 7 días.
 - **El cálculo de las señales falla:** las velas ya entraron y la pasada sale
   con 2.
 
@@ -352,7 +429,11 @@ que escribió el propio equipo vuelve a 0, para que apagarlas quite el aviso.
   - la pasada lleva más de 15 min (`BTC_DATOS_MAX_MIN`, tres pasadas) sin
     escribir las velas de ese producto: falla la pasada, su temporizador o 014;
   - escribe, pero pasados esos 15 min tras la medianoche UTC no hay vela del
-    día: Coinbase no la trae (el producto parado, vencido o renombrado).
+    día: Coinbase no la trae (el producto parado, vencido o renombrado). En los
+    que solo cotizan de lunes a viernes (lo deduce de los datos: 10 o más velas
+    en 28 días y ninguna en sábado o domingo, como TEK), el fin de semana no
+    cuenta, y un día hábil sin vela tampoco (un festivo): avisa cuando faltan
+    dos días hábiles seguidos, a partir de las 06:15 UTC del segundo.
 - `bs:senales`, «las señales de BTC no salen», si el paso de las señales lleva
   fallando más de 15 min (Telegram que no las acepta, el cálculo, rqlite).
 
@@ -365,8 +446,11 @@ renombrar un producto, el Wheel avisará de él durante esa semana. Con 014 caí
 llegan dos avisos de la misma causa: el del nodo y el de BTC.
 
 **Configuración** (entorno o `sentinel.conf` de 014):
-- `BTC_AVISOS`: productos de las señales, el principal primero. Por defecto,
-  `"BIP-20DEC30-CDE BTC-USD"`; vacío, sin señales.
+- `BTC_AVISOS`: grupos de las señales separados por comas; en cada uno, sus
+  productos, el principal primero. Por defecto,
+  `"BIP-20DEC30-CDE BTC-USD, TEK-19DEC30-CDE"`; vacío, sin señales.
+- `BTC_LABORABLES`: los productos que solo cotizan de lunes a viernes. Por
+  defecto, `"TEK-19DEC30-CDE"`; vacío, ninguno.
 - `BTC_AVISO_HORAS`: horas tras el cierre de la vela en que una señal todavía
   se manda (36).
 - `BTC_TG_CONF`: el fichero del bot.

@@ -38,7 +38,13 @@
 # el spot para la EMA y el canal semanales y para Fibonacci (aun sin ciclo
 # propio), y en cuanto tenga el dato pasa solo a usar el suyo.
 #
+# Cada llamada es UN grupo (un activo): BTC (perpetuo y spot) o el Tech 100
+# (TEK). Los grupos no se mezclan: cada uno va en su propia llamada, con sus
+# productos en `orden`, y sus señales llevan su `grupo` en la clave.
+#
 # Variables (-v):
+#   grupo    clave del grupo: su producto principal (el primero de orden, que es
+#            lo que pone el script). Vacio = el primero de orden
 #   orden    productos separados por espacio, el principal primero
 #   desde    instante (s UTC): son candidatas las velas cerradas que cierran
 #            DESPUES de el (la diaria a las 24 h de su ts, la semanal a los 7 d)
@@ -48,8 +54,9 @@
 #            habia antes de crear la tabla)
 #
 # Salida json: un INSERT OR IGNORE por señal en cripto_aviso, con clave
-# (marco, ts, tipo): la misma señal calculada otra vez en la pasada siguiente
-# no se duplica, ni se vuelve a mandar. Salida tsv:
+# (grupo, marco, ts, tipo): la misma señal calculada otra vez en la pasada
+# siguiente no se duplica, ni se vuelve a mandar; y la de BTC y la del Tech 100
+# de la misma vela no chocan. Salida tsv (sin el grupo, que es uno por llamada):
 #   marco ts tipo producto sentido precio nivel texto
 # Por stderr: "RESUMEN_AV senales=N candidatas=K".
 # Error (exit 2 y "ERROR ..." por stderr): una linea que no cuadra, o una vela
@@ -81,7 +88,7 @@ function nivel(n, precio) {
   if (n == 1) return "el mínimo del ciclo (" miles(precio) ")"
   return "el " pct(n) " (" miles(precio) ")"
 }
-function nombre(p) { if (p ~ /^BIP-/) return "Perpetuo"; if (p == "BTC-USD") return "Spot"; return p }
+function nombre(p) { if (p ~ /^BIP-/) return "Perpetuo"; if (p == "BTC-USD") return "Spot"; if (p ~ /^TEK-/) return "Tech 100"; return p }
 function prefijo(p, m, t) { return nombre(p) ", " ((m == "1d") ? "diaria" : "semanal") " del " fecha(t) ": " }
 
 # Guarda una señal. sentido: 1 arriba, -1 abajo.
@@ -165,6 +172,8 @@ BEGIN {
   NP = split(orden, P, " ")
   if (NP < 1) falla("falta orden (los productos)")
   for (k = 1; k <= NP; k++) { if (P[k] !~ /^[A-Z0-9-]+$/) falla("producto no valido: " P[k]); EsP[P[k]] = 1 }
+  if (grupo == "") grupo = P[1]
+  if (grupo !~ /^[A-Z0-9-]+$/) falla("grupo no valido: " grupo)
   desde += 0; creado += 0
   if (desde <= 0) falla("falta desde")
   NFAM = split("canal ema100 ema200 emas fib ha", FAM, " ")
@@ -235,8 +244,8 @@ END {
       printf "%s\t%d\t%s\t%s\t%d\t%s\t%s\t%s\n", SM[k], ST[k], SK[k], SP[k], SS[k], num(SPr[k]), num(SN[k]), SX[k]
       continue
     }
-    printf "[\"INSERT OR IGNORE INTO cripto_aviso(marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES(?,?,?,?,?,?,?,?,?,?)\",\"%s\",%d,\"%s\",\"%s\",%d,%s,%s,\"%s\",%d,%s]\n", \
-      SM[k], ST[k], SK[k], SP[k], SS[k], num(SPr[k]), num(SN[k]), SX[k], creado, (enviado == "") ? "null" : "0"
+    printf "[\"INSERT OR IGNORE INTO cripto_aviso(grupo,marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES(?,?,?,?,?,?,?,?,?,?,?)\",\"%s\",\"%s\",%d,\"%s\",\"%s\",%d,%s,%s,\"%s\",%d,%s]\n", \
+      grupo, SM[k], ST[k], SK[k], SP[k], SS[k], num(SPr[k]), num(SN[k]), SX[k], creado, (enviado == "") ? "null" : "0"
   }
   printf "RESUMEN_AV senales=%d candidatas=%d\n", ns, cand > "/dev/stderr"
 }

@@ -3,9 +3,11 @@
 // avisos-ref.js), sin pasar por ningun awk. Mira solo las velas que la pasada de
 // `ahora` tiene por candidatas: las cerradas en los ultimos 7 dias.
 // Uso: node avisos-comprueba.js <url-rqlite> <usuario:clave> <fichero-estado> "<orden>"
+// <orden> es UN grupo (sus productos, el principal primero): solo se miran las
+// señales de ese grupo (columna grupo = el principal).
 // Sale con 0 y "coincide: N señales" si coinciden fila a fila.
 'use strict';
-const { leeEstado, velas, esperadas } = require('./serie-falsa');
+const { leeEstado, esperadasDe } = require('./serie-falsa');
 const IR = require('./indicadores-ref');
 const FR = require('./fibonacci-ref');
 const AR = require('./avisos-ref');
@@ -17,7 +19,7 @@ const DUR = { '1d': 86400, '1w': 604800 };
 
 // La misma estructura que AR.lee() saca de la corriente, pero desde la referencia.
 function producto(id, desde) {
-  const filas = esperadas(velas(e, id), e.ahora);
+  const filas = esperadasDe(e, id);
   const x = { velas: { '1d': [], '1w': [] }, ind: {}, fib: {} };
   for (const f of filas) if (f.cerrada === 1) x.velas[f.marco].push({ ts: f.ts, c: f.c, ho: f.ho, hc: f.hc });
   for (const r of IR.indicadores(filas.map(f => ({ marco: f.marco, ts: f.ts, c: f.c, hc: f.hc, cerrada: f.cerrada }))))
@@ -37,7 +39,7 @@ function producto(id, desde) {
   const prods = {};
   for (const id of orden) prods[id] = producto(id, desde);
   const exp = AR.senales(prods, orden, desde);
-  const q = [['SELECT marco,ts,tipo,producto,sentido,precio,nivel,texto FROM cripto_aviso ORDER BY marco,ts,tipo']];
+  const q = [['SELECT marco,ts,tipo,producto,sentido,precio,nivel,texto FROM cripto_aviso WHERE grupo=? ORDER BY marco,ts,tipo', orden[0]]];
   const r = await fetch(rq + '/db/query?level=strong', { method: 'POST', headers: { 'Content-Type': 'application/json', Authorization: 'Basic ' + Buffer.from(cred).toString('base64') }, body: JSON.stringify(q) });
   const j = await r.json();
   if (j.results[0].error) { console.log('ERROR cripto_aviso: ' + j.results[0].error); process.exit(2); }

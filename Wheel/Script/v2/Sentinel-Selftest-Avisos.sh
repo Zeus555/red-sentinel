@@ -125,16 +125,23 @@ case "$url" in
         done
         printf ']}]}'; codigo 200; exit 0 ;;
       # Monitoreo de BTC: $M/btc con lineas "producto,ultimo actualizado[,ts de
-      # la ultima vela]" (sin ts: la vela del dia de ese actualizado).
+      # la ultima vela[,velas en 28 dias,de ellas en fin de semana]]" (sin ts: la
+      # vela del dia de ese actualizado; sin los dos ultimos: 28 y 8, un 24/7).
+      # Las columnas 4 y 5 solo salen si la consulta pide la ventana de 28 dias
+      # de ESTA pasada y el dia de la semana: si el Wheel dejara de pedirlas, las
+      # pruebas de lunes a viernes fallarian.
       *"FROM cripto_vela WHERE marco='1d' GROUP BY producto"*)
         [ -f "$M/btc.sintabla" ] && { printf '{"results":[{"error":"no such table: cripto_vela"}]}'; codigo 200; exit 0; }
-        [ -f "$M/btc" ] || { printf '{"results":[{"columns":["producto","MAX(actualizado)","MAX(ts)"]}]}'; codigo 200; exit 0; }
-        printf '{"results":[{"columns":["producto","MAX(actualizado)","MAX(ts)"],"types":["text","integer","integer"],"values":['
+        cols='"producto","MAX(actualizado)","MAX(ts)"'; ext=0
+        case "$q" in *"ts>=$((SENTINEL_NOW - 2419200)) "*"(ts/86400+4)%7 IN (0,6)"*) cols="$cols,\"s28\",\"finde\""; ext=1 ;; esac
+        [ -f "$M/btc" ] || { printf '{"results":[{"columns":[%s]}]}' "$cols"; codigo 200; exit 0; }
+        printf '{"results":[{"columns":[%s],"values":[' "$cols"
         sep=""
-        while IFS=, read -r p ac vt; do
+        while IFS=, read -r p ac vt rc fs; do
           [ -n "$p" ] || continue
           [ -n "$vt" ] || vt=$((ac - ac % 86400))
-          printf '%s["%s",%s,%s]' "$sep" "$p" "$ac" "$vt"; sep=","
+          if [ "$ext" = 1 ]; then printf '%s["%s",%s,%s,%s,%s]' "$sep" "$p" "$ac" "$vt" "${rc:-28}" "${fs:-8}"
+          else printf '%s["%s",%s,%s]' "$sep" "$p" "$ac" "$vt"; fi; sep=","
         done < "$M/btc"
         printf ']}]}'; codigo 200; exit 0 ;;
     esac
@@ -332,7 +339,8 @@ done
 si "D6 cron muerto en un nodo que se cae una pasada de cada cuatro: acaba avisando" 'grep -q "dt_mal ok" "$B/alert.log"'
 
 echo "== Monitoreo de BTC"
-# btc "producto,actualizado[,ts de la ultima vela]" ...: lo que hay en cripto_vela.
+# btc "producto,actualizado[,ts de la ultima vela[,velas en 28 dias,en fin de
+# semana]]" ...: lo que hay en cripto_vela (sin los dos ultimos, un 24/7).
 # rb: una pasada con la telemetria al dia (si no, la replica no cuenta como al
 # dia y BTC no se mira, que es otra prueba).
 btc(){ printf '%s\n' "$@" > "$M/btc"; }
@@ -399,6 +407,51 @@ si "BV10 escribe pero sin la vela de hoy: Coinbase no la trae, con las fechas en
 NOW=$(( (NOW / 86400 + 1) * 86400 + 840 )); HOY=$((NOW - 840))
 mundo_sano; btc "$PE,$NOW,$((HOY - 86400))"; rb
 si "BV10 a las 00:14 UTC aun sin la de hoy: todavia no (plazo tras medianoche)" 'nada && [ "$(estado bv:$PE)" = ok ]'
+
+# Un producto de lunes a viernes (el Tech 100): 20 velas en 28 dias y ninguna en
+# fin de semana. salta <dia de la semana, 0 domingo .. 6 sabado> <segundos tras
+# la medianoche UTC>: el siguiente dia asi (siempre hacia delante); hora <s>: la
+# misma fecha, a esa hora (solo hacia delante). fe <ts>: dd/mm en UTC.
+TK=TEK-19DEC30-CDE
+salta(){ _d=$((NOW / 86400 + 1)); while [ $(( (_d + 4) % 7 )) -ne "$1" ]; do _d=$((_d + 1)); done; NOW=$((_d * 86400 + $2)); }
+hora(){ NOW=$((NOW - NOW % 86400 + $1)); }
+fe(){ date -u -d "@$1" +%d/%m; }
+salta 3 43200; MIE=$((NOW - 43200))
+mundo_sano; btc "$TK,$NOW,$MIE,20,0" "$PE,$NOW"; rb
+si "BV11 lunes a viernes, al dia un miercoles: bien" 'nada && [ "$(estado bv:$TK)" = ok ] && [ "$(estado bv:$PE)" = ok ]'
+salta 5 43200; VIE=$((NOW - 43200))
+btc "$TK,$NOW,$VIE,20,0" "$PE,$NOW"; rb
+salta 6 43200; btc "$TK,$NOW,$VIE,20,0" "$PE,$NOW"; rb
+si "BV11 sabado con la ultima vela del viernes: nada" 'nada && [ "$(estado bv:$TK)" = ok ]'
+salta 0 43200; btc "$TK,$NOW,$VIE,20,0" "$PE,$NOW"; rb
+si "BV11 domingo con la del viernes: nada" 'nada && [ "$(estado bv:$TK)" = ok ]'
+salta 1 1800; LUN=$((NOW - 1800)); btc "$TK,$NOW,$VIE,20,0" "$PE,$NOW"; rb
+si "BV11 lunes 00:30 UTC sin la del lunes (en invierno abre a la 01:00): nada" 'nada && [ "$(estado bv:$TK)" = ok ]'
+hora 18000; btc "$TK,$NOW,$VIE,20,0" "$PE,$NOW"; rb
+si "BV11 lunes 05:00 UTC aun sin la del lunes: nada (6 h de gracia)" 'nada && [ "$(estado bv:$TK)" = ok ]'
+hora 25200; btc "$TK,$NOW,$VIE,20,0" "$PE,$NOW"; rb
+si "BV11 lunes 07:00 UTC sin la del lunes (un festivo): falta un dia habil, nada" 'nada && [ "$(estado bv:$TK)" = ok ]'
+salta 2 18000; btc "$TK,$NOW,$VIE,20,0" "$PE,$NOW"; rb
+si "BV11 martes 05:00 UTC con la del viernes: el martes aun no cuenta (6 h de gracia), nada" 'nada && [ "$(estado bv:$TK)" = ok ]'
+hora 25200; btc "$TK,$NOW,$VIE,20,0" "$PE,$NOW"; rb
+si "BV12 martes 07:00 UTC con la ultima del viernes: faltan dos dias habiles, avisa del lunes" 'hay "no está al día" && hay "• $TK: escribe, pero Coinbase no trae la vela del $(fe "$LUN") (UTC); la última es del $(fe "$VIE")" && ! hay "$PE" && [ "$(estado bv:$PE)" = ok ]'
+avanza; btc "$TK,$NOW,$((NOW - 25500)),20,0" "$PE,$NOW"; rb
+si "BV12 llega la del martes: vuelve" 'hay "vuelve a estar al día" && hay "• $TK" && [ "$(estado bv:$TK)" = ok ]'
+# Con pocos datos (5 velas en 28 dias) no se sabe si es de lunes a viernes: se
+# mira como un 24/7. Y un 24/7 con la ultima del viernes avisa el sabado, como
+# siempre, aunque al lado haya uno de lunes a viernes igual de quieto.
+# Cada caso: viernes 23:00 UTC con la vela del viernes (bien), y el sabado a la
+# 01:00 UTC con la misma.
+salta 5 82800; VIE=$((NOW - 82800)); mundo_sano; btc "$TK,$NOW,$VIE,5,0"; rb
+si "BV13 viernes 23:00, al dia (5 velas en 28 dias)" 'nada && [ "$(estado bv:$TK)" = ok ]'
+avanza 7200; btc "$TK,$NOW,$VIE,5,0"; rb
+si "BV13 con 5 velas en 28 dias se trata como 24/7: el sabado avisa" 'hay "• $TK: escribe, pero Coinbase no trae la vela del $(fe "$((VIE + 86400))") (UTC); la última es del $(fe "$VIE")"'
+salta 5 82800; VIE=$((NOW - 82800)); mundo_sano; btc "$TK,$NOW,$VIE,20,0" "$PE,$NOW,$VIE"; rb
+avanza 7200; btc "$TK,$NOW,$VIE,20,0" "$PE,$NOW,$VIE"; rb
+si "BV13 un 24/7 parado en el viernes avisa el sabado, y el de lunes a viernes al lado no" 'hay "• $PE: escribe, pero Coinbase no trae la vela del $(fe "$((VIE + 86400))") (UTC)" && ! hay "$TK" && [ "$(estado bv:$TK)" = ok ]'
+salta 5 82800; VIE=$((NOW - 82800)); mundo_sano; btc "$TK,$NOW,$VIE,20,1"; rb
+avanza 7200; btc "$TK,$NOW,$VIE,20,1"; rb
+si "BV13 una sola vela en fin de semana en 28 dias: ya es 24/7 y avisa" 'hay "• $TK: escribe, pero Coinbase no trae la vela del $(fe "$((VIE + 86400))") (UTC)"'
 
 echo "== Señales de BTC"
 # vbtc <desde> <codigo>: lo que apunta la pasada de BTC en sentinel_vigia.

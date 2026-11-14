@@ -177,9 +177,12 @@ CREATE TABLE sentinel_respaldo (fichero TEXT PRIMARY KEY, ts INTEGER NOT NULL, f
 -- (BTC-USD). La escribe btc/Sentinel-BTC-Velas.sh (usuario sentinel), que la
 -- crea si no existe. Una fila por producto, marco ('1d' o '1w', semana de lunes
 -- 00:00 UTC) y ts (inicio de la vela, segundos UTC). cerrada=0 es la vela en
--- curso. dias solo en '1w': cuantos dias la forman (7 = completa). ~4.700 filas
--- de BTC-USD desde 2015 y ~550 del perpetuo desde 18/07/2025; ~16 filas nuevas
--- por semana. Anadida el 2026-11-12.
+-- curso. dias solo en '1w': cuantos dias la forman (7 = completa; 5 en los que
+-- solo cotizan de lunes a viernes, como TEK-19DEC30-CDE, el perpetuo del Tech
+-- 100, cuya semana se cierra al acabar el viernes). ~4.700 filas de BTC-USD
+-- desde 2015, ~550 del perpetuo desde 18/07/2025 y ~130 de TEK desde
+-- 15/06/2026; ~21 filas nuevas por semana. Anadida el 2026-11-12; TEK el
+-- 2026-11-14.
 -- ---------------------------------------------------------------------
 
 CREATE TABLE cripto_vela (producto TEXT NOT NULL, marco TEXT NOT NULL, ts INTEGER NOT NULL, apertura REAL NOT NULL, maximo REAL NOT NULL, minimo REAL NOT NULL, cierre REAL NOT NULL, volumen REAL NOT NULL, ha_apertura REAL, ha_maximo REAL, ha_minimo REAL, ha_cierre REAL, cerrada INTEGER NOT NULL, dias INTEGER, fuente TEXT, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, marco, ts)) WITHOUT ROWID;
@@ -214,11 +217,12 @@ CREATE TABLE cripto_indicador (producto TEXT NOT NULL, marco TEXT NOT NULL, base
 CREATE TABLE cripto_fibonacci (producto TEXT NOT NULL, tramo TEXT NOT NULL, nivel REAL NOT NULL, precio REAL NOT NULL, bajo_ts INTEGER NOT NULL, bajo REAL NOT NULL, alto_ts INTEGER NOT NULL, alto REAL NOT NULL, caida REAL NOT NULL, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, tramo, nivel)) WITHOUT ROWID;
 
 -- ---------------------------------------------------------------------
--- SEÑALES DE BTC: una fila por señal al cierre de una vela (marco 1d/1w, ts de
--- la vela) y tipo: canal (ruptura del canal de regresion), ema100, ema200, emas
+-- SEÑALES DE MERCADO (BTC y el Tech 100): una fila por grupo (el activo: su
+-- producto principal, BIP-20DEC30-CDE para BTC y TEK-19DEC30-CDE para el Tech
+-- 100), señal al cierre de una vela (marco 1d/1w, ts de la vela) y tipo: canal (ruptura del canal de regresion), ema100, ema200, emas
 -- (cruce entre las dos), fib (cruce de niveles de Fibonacci) o ha (cambio de
--- color del Heikin Ashi). producto = la serie de la que salio: el perpetuo, o el
--- spot donde al perpetuo le falta el dato. sentido 1 arriba, -1 abajo; precio =
+-- color del Heikin Ashi). producto = la serie de la que salio: en BTC, el
+-- perpetuo, o el spot donde al perpetuo le falta el dato; en el Tech 100, TEK. sentido 1 arriba, -1 abajo; precio =
 -- cierre; nivel = la referencia cruzada (EMA, borde, nivel, cierre HA); texto =
 -- la linea del mensaje. enviado: null pendiente, 0 no se manda (de antes de
 -- crear la tabla), -1 caducada sin mandar (vela cerrada hace mas de 36 h), o la
@@ -226,9 +230,11 @@ CREATE TABLE cripto_fibonacci (producto TEXT NOT NULL, tramo TEXT NOT NULL, nive
 -- INSERT OR IGNORE (una señal no se duplica ni se vuelve a mandar), que la crea
 -- con sus primeras señales. El estado de ese paso va en sentinel_vigia (fila
 -- btc-senales: ts desde cuando, pendientes = su codigo, 0 bien). Anadida el
--- 2026-11-13.
+-- 2026-11-13 con la clave (marco, ts, tipo); el 2026-11-14 paso a (grupo,
+-- marco, ts, tipo) para el Tech 100 (el script migra sola la de antes, en una
+-- transaccion: las señales viejas quedan con grupo BIP-20DEC30-CDE).
 -- ---------------------------------------------------------------------
 
-CREATE TABLE cripto_aviso (marco TEXT NOT NULL, ts INTEGER NOT NULL, tipo TEXT NOT NULL, producto TEXT NOT NULL, sentido INTEGER NOT NULL, precio REAL NOT NULL, nivel REAL, texto TEXT NOT NULL, creado INTEGER NOT NULL, enviado INTEGER, PRIMARY KEY (marco, ts, tipo)) WITHOUT ROWID;
+CREATE TABLE cripto_aviso (grupo TEXT NOT NULL, marco TEXT NOT NULL, ts INTEGER NOT NULL, tipo TEXT NOT NULL, producto TEXT NOT NULL, sentido INTEGER NOT NULL, precio REAL NOT NULL, nivel REAL, texto TEXT NOT NULL, creado INTEGER NOT NULL, enviado INTEGER, PRIMARY KEY (grupo, marco, ts, tipo)) WITHOUT ROWID;
 
 -- fin: 17 tablas, 1 vista(s), 7 indices

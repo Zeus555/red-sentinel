@@ -30,10 +30,19 @@
 #   salida       "json" (sentencias para /db/execute de rqlite) o "tsv"
 #   fuente       nombre del equipo que escribe (columna fuente)
 #   actualizado  segundos UTC de esta pasada (columna actualizado)
+#   laborable    1 = el producto solo cotiza de lunes a viernes (TEK, el perpetuo
+#                del Tech 100: de domingo 19:00 CT a viernes 16:00 CT, que en UTC
+#                son velas de lunes a viernes). Entonces:
+#                  - el sabado y el domingo no cuentan como hueco (un festivo
+#                    entre semana si: Coinbase no trae su vela);
+#                  - la semana se da por cerrada al acabar el viernes (sabado
+#                    00:00 UTC): ya no queda ninguna vela suya por llegar.
+#                Vacio o 0 = cotiza todos los dias (BTC).
 #
 # Por stderr deja un resumen de una linea que empieza por "RESUMEN" y una linea
-# "HUECO desde hasta" por cada tramo de dias que falten. Un hueco NO se rellena:
-# la semana que lo contiene sale con dias < 7.
+# "HUECO desde hasta" por cada tramo de dias que falten (con laborable=1, desde
+# el primer dia habil que falta hasta el ultimo). Un hueco NO se rellena: la
+# semana que lo contiene sale con menos dias (7, o 5 con laborable=1).
 #
 # Sale con 2 si la entrada viene desordenada o repetida: eso es un fallo del
 # script que la prepara, y es mejor no escribir nada que escribir velas mal.
@@ -62,7 +71,7 @@ function cierra_semana(   c_ha, o_ha, h_ha, l_ha, cerr) {
   o_ha = (n_sem == 0) ? (w_o + w_c) / 2 : (w_ant_o + w_ant_c) / 2
   h_ha = max3(w_h, o_ha, c_ha)
   l_ha = min3(w_l, o_ha, c_ha)
-  cerr = (w_ts + SEM <= ahora) ? 1 : 0
+  cerr = (w_ts + FIN_SEM <= ahora) ? 1 : 0
   if (w_ts + SEM > desde)
     emite("1w", w_ts, w_os, w_hs, w_ls, w_cs, sprintf("%.8f", w_v), o_ha, h_ha, l_ha, c_ha, cerr, w_n)
   w_ant_o = o_ha; w_ant_c = c_ha
@@ -73,8 +82,18 @@ BEGIN {
   DIA = 86400; SEM = 7 * DIA
   if (salida == "") salida = "json"
   ahora += 0; desde += 0; actualizado += 0
+  if (laborable != "" && laborable != "0" && laborable != "1") {
+    print "ERROR laborable solo puede ir vacio, 0 o 1" > "/dev/stderr"; fallo = 1; exit 2
+  }
+  laborable += 0
+  # Cuando acaba la semana a efectos de "cerrada": 7 dias, o 5 si solo cotiza
+  # de lunes a viernes.
+  FIN_SEM = laborable ? 5 * DIA : SEM
   n_dia = 0; n_sem = 0; huecos = 0; tramos = 0; emitidas = 0; previo = -1; w_ts = -1
 }
+
+# 1 si el dia d (dias desde 01/01/1970, que fue jueves) es sabado o domingo.
+function finde(d,   w) { w = (d + 4) % 7; return (w == 0 || w == 6) }
 
 NF < 6 { next }
 
@@ -86,11 +105,26 @@ NF < 6 { next }
     fallo = 1; exit 2
   }
   if (previo >= 0 && t - previo > DIA) {
-    huecos += (t - previo) / DIA - 1; tramos++
-    printf "HUECO %d %d\n", previo + DIA, t - DIA > "/dev/stderr"
+    if (!laborable) {
+      huecos += (t - previo) / DIA - 1; tramos++
+      printf "HUECO %d %d\n", previo + DIA, t - DIA > "/dev/stderr"
+    } else {
+      # Solo los dias habiles que faltan; el fin de semana no es un hueco.
+      hn = 0; hp = -1; hu = -1
+      for (dd = int(previo / DIA) + 1; dd < int(t / DIA); dd++)
+        if (!finde(dd)) { hn++; if (hp < 0) hp = dd; hu = dd }
+      if (hn > 0) {
+        huecos += hn; tramos++
+        printf "HUECO %d %d\n", hp * DIA, hu * DIA > "/dev/stderr"
+      }
+    }
   }
   if (n_dia == 0) primera = t
   previo = t; ultima = t; ultimo_cierre = $5
+  # Un laborable con vela en sabado o domingo: ya no es solo de lunes a
+  # viernes, y su semana se habria dado por cerrada antes de tiempo. Se cuenta
+  # (RESUMEN finde=N) para que la pasada lo diga.
+  if (laborable && finde(int(t / DIA))) n_finde++
 
   # --- Heikin Ashi diaria ---
   c_ha = (o + h + l + c) / 4
@@ -118,6 +152,6 @@ NF < 6 { next }
 END {
   if (fallo) exit 2
   if (w_ts >= 0) cierra_semana()
-  printf "RESUMEN producto=%s diarias=%d semanales=%d huecos=%d tramos=%d primera=%d ultima=%d cierre=%s emitidas=%d\n", \
-    producto, n_dia, n_sem, huecos, tramos, (n_dia ? primera : 0), (n_dia ? ultima : 0), ultimo_cierre, emitidas > "/dev/stderr"
+  printf "RESUMEN producto=%s diarias=%d semanales=%d huecos=%d tramos=%d primera=%d ultima=%d cierre=%s emitidas=%d finde=%d\n", \
+    producto, n_dia, n_sem, huecos, tramos, (n_dia ? primera : 0), (n_dia ? ultima : 0), ultimo_cierre, emitidas, n_finde + 0 > "/dev/stderr"
 }

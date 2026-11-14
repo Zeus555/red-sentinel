@@ -1,14 +1,24 @@
 #!/usr/bin/env sh
-# Sentinel BTC - velas diarias y semanales de BTC en Coinbase, con Heikin Ashi,
-# guardadas en el rqlite de la red. Por defecto, dos series:
+# Sentinel BTC - velas diarias y semanales de Coinbase, con Heikin Ashi,
+# guardadas en el rqlite de la red. Por defecto, tres series:
 #   BIP-20DEC30-CDE  el perpetuo de futuros de BTC de Coinbase en EE. UU. ("nano
-#                    BTC Perp", 0,01 BTC por contrato, sin vencimiento hasta
-#                    dic-2030). Es la serie para operar, tambien en corto. Su
-#                    historia empieza el 18/07/2025 (~70 semanas). El volumen va
-#                    en CONTRATOS, no en BTC.
+#                    BTC Perp", 0,01 BTC por contrato, sin vencimiento: el
+#                    "20DEC30" del nombre es solo una referencia). Es la serie
+#                    para operar, tambien en corto. Su historia empieza el
+#                    18/07/2025 (~70 semanas). El volumen va en CONTRATOS, no
+#                    en BTC.
 #   BTC-USD          el spot, desde el 20/07/2015. Hace falta para lo que pide
 #                    historia larga y el perpetuo no tiene: la EMA 100 y 200
 #                    semanal necesitan 100 y 200 semanas.
+#   TEK-19DEC30-CDE  el perpetuo del "Tech 100" de Coinbase Derivatives (1 $ por
+#                    punto del MarketVector US Listed Innovators 100, que NO es el
+#                    Nasdaq-100: vale ~3.700, no ~27.700). Tambien sin
+#                    vencimiento desde el 26/10/2026 (el "19DEC30" es solo una
+#                    referencia). Cotiza de domingo 19:00 CT a viernes 16:00 CT:
+#                    en UTC, velas de LUNES A VIERNES, y ninguna los festivos de
+#                    bolsa de EE. UU. (ver BTC_LABORABLES). Historia desde el
+#                    15/06/2026. Va solo, sin spot detras: no hay serie larga del
+#                    mismo indice en Coinbase.
 #
 # QUE HACE, en cada pasada y por cada producto (BTC_PRODUCTOS):
 #   1. Lee de rqlite las velas diarias que ya hay (tabla cripto_vela, marco 1d).
@@ -37,38 +47,48 @@
 #      menos un año hasta superarlo) al maximo historico; hoy, del minimo de
 #      2022 al ATH de 2025. Van a la tabla cripto_fibonacci. Cada producto con
 #      su propia historia: hoy solo BTC-USD tiene un bajista ya superado; el
-#      perpetuo tendra el suyo el dia que supere su ATH de oct-2025.
+#      perpetuo tendra el suyo el dia que supere su ATH de oct-2025, y TEK
+#      (que nacio en junio de 2026) no tiene ninguno.
 #   5. Escribe solo las filas que pueden haber cambiado, en lotes con
 #      ?transaction. Una pasada sin novedades reescribe los 4 ultimos dias
 #      cerrados, el de hoy y 1-2 semanas de velas (6-7 filas), y el doble de
 #      indicadores (real y Heikin Ashi), en un solo lote por producto. Los
 #      niveles de Fibonacci se rehacen enteros en cada pasada, aparte, en una
 #      sola transaccion.
-#   7. Señales de mercado al cierre de cada vela (avisos-calculo.awk), cuando
-#      TODOS los productos de BTC_AVISOS salieron bien en esta pasada: ruptura
+#   7. Señales de mercado al cierre de cada vela (avisos-calculo.awk): ruptura
 #      del canal, cruces con la EMA 100 y 200, cruce entre las dos EMA, niveles
-#      de Fibonacci y cambio de color del Heikin Ashi, en diaria y semanal. Del
-#      primer producto de BTC_AVISOS (el perpetuo) y, donde a el le falta el
-#      dato, del siguiente (el spot). Van a la tabla cripto_aviso, sin
-#      duplicados: (marco, ts, tipo) es la clave. Despues se mandan por Telegram
-#      (el bot de thermal-guard) las que estan pendientes, en un solo mensaje, y
-#      se marcan como enviadas. Si Telegram falla, siguen pendientes y la pasada
-#      siguiente lo reintenta; las de una vela cerrada hace mas de
-#      BTC_AVISO_HORAS ya no se mandan (se marcan con -1). Si el paso falla
-#      (Telegram, el calculo, rqlite), lo apunta en sentinel_vigia (fila
-#      btc-senales, solo al pasar de bien a mal o al reves) y el Wheel avisa.
+#      de Fibonacci y cambio de color del Heikin Ashi, en diaria y semanal. Por
+#      GRUPOS (BTC_AVISOS), cada uno un activo y por separado: BTC (el perpetuo
+#      y, donde a el le falta el dato, el spot) y el Tech 100 (TEK, solo). Un
+#      grupo se calcula cuando TODOS sus productos salieron bien en esta pasada;
+#      si no, se salta y los demas siguen. Van a la tabla cripto_aviso, sin
+#      duplicados: (grupo, marco, ts, tipo) es la clave. Despues se mandan por
+#      Telegram (el bot de thermal-guard) las que estan pendientes, en un solo
+#      mensaje con una parte por grupo, y se marcan como enviadas. Si Telegram
+#      falla, siguen pendientes y la pasada siguiente lo reintenta; las de una
+#      vela cerrada hace mas de BTC_AVISO_HORAS ya no se mandan (se marcan con
+#      -1). Si el paso falla (Telegram, el calculo, rqlite, un grupo sin
+#      calcular), lo apunta en sentinel_vigia (fila btc-senales, solo al pasar
+#      de bien a mal o al reves) y el Wheel avisa.
+#      Una tabla cripto_aviso de antes de los grupos (clave marco, ts, tipo) se
+#      migra sola, una vez y en una transaccion, a la clave con grupo.
 #
 # Solo usa el endpoint PUBLICO de velas de Coinbase Advanced Trade: sin claves,
 # sin cuenta, sin ordenes. Las peticiones a Coinbase van con `curl -q` para que
 # curl NUNCA lea un ~/.curlrc y no se le escape una credencial de rqlite.
 #
 # Velas "cerradas": una vela diaria esta cerrada cuando ya pasaron sus 24 h; la
-# semanal, cuando paso el domingo 23:59:59 UTC. La vela en curso se guarda con
-# cerrada=0 y se va actualizando en cada pasada: los indicadores y las rupturas
-# deben mirar solo velas cerradas.
+# semanal, cuando paso el domingo 23:59:59 UTC (en los de BTC_LABORABLES, el
+# viernes 23:59:59 UTC: el sabado y el domingo no cotizan). La vela en curso se
+# guarda con cerrada=0 y se va actualizando en cada pasada: los indicadores y
+# las rupturas deben mirar solo velas cerradas.
 #
 # Un dia que falte en Coinbase NO se inventa: se anota en el log como hueco y la
-# semana que lo contiene queda con dias < 7.
+# semana que lo contiene queda con menos dias (de 7, o de 5 en los de
+# BTC_LABORABLES, para los que el fin de semana no es un hueco y un festivo si).
+# El detalle de los huecos va al log en la carga completa y, en las pasadas
+# normales, solo el de los que caen en los dias que se reescriben: asi un
+# festivo viejo de TEK no se repite en cada pasada (el resumen los cuenta todos).
 #
 # Uso:
 #   Sentinel-BTC-Velas.sh              pasada normal (incremental)
@@ -82,15 +102,21 @@
 #   RQLITE_CRED   fichero curlrc del usuario de rqlite (por defecto
 #                 ~/.config/rqlite/sentinel.curlrc; necesita execute y query)
 #   BTC_PRODUCTOS productos de Coinbase separados por espacio (por defecto
-#                 "BIP-20DEC30-CDE BTC-USD"). Cuando el perpetuo cambie de
-#                 nombre (vence en dic-2030), se cambia aqui y en BTC_AVISOS (o en
-#                 sentinel.conf).
+#                 "BIP-20DEC30-CDE BTC-USD TEK-19DEC30-CDE"). Si un perpetuo
+#                 cambia de nombre, se cambia aqui, en BTC_AVISOS y en
+#                 BTC_LABORABLES (o en sentinel.conf).
+#   BTC_LABORABLES  los de BTC_PRODUCTOS que solo cotizan de lunes a viernes (por
+#                 defecto "TEK-19DEC30-CDE"; vacio = ninguno): el fin de semana
+#                 no es un hueco y su semana cierra el viernes.
 #   BTC_DIR       carpeta del log y del cerrojo (por defecto ~/PRC_Sentinel/btc)
 #   BTC_MARGEN    segundos tras el fin de una vela para darla por cerrada (60)
 #   BTC_NODOS     (en sentinel.conf) unico nodo donde corre; los demas salen
-#   BTC_AVISOS    productos de las señales, el principal primero (por defecto
-#                 "BIP-20DEC30-CDE BTC-USD"); vacio = sin señales. Tienen que
-#                 estar en BTC_PRODUCTOS.
+#   BTC_AVISOS    grupos de las señales separados por COMAS; en cada grupo, sus
+#                 productos separados por espacio, el principal primero (por
+#                 defecto "BIP-20DEC30-CDE BTC-USD, TEK-19DEC30-CDE": BTC y el
+#                 Tech 100); vacio = sin señales. Tienen que estar en
+#                 BTC_PRODUCTOS, y cada uno en un solo grupo. El principal de
+#                 cada grupo es su clave en cripto_aviso (columna grupo).
 #   BTC_AVISO_HORAS  horas tras el cierre de la vela en que una señal todavia se
 #                 manda (36); mas tarde se marca como caducada (-1)
 #   BTC_TG_CONF   fichero con BOT_TOKEN y CHAT_ID (por defecto el de
@@ -122,7 +148,9 @@ if [ -r "$CONF" ]; then . "$CONF"; fi
 RQ="${ENV_RQ:-${RQLITE:-http://127.0.0.1:4001}}"
 RQLITE_CRED="${ENV_CRED:-${RQLITE_CRED:-$HOME/.config/rqlite/sentinel.curlrc}}"
 CB="${CB_API:-https://api.coinbase.com/api/v3/brokerage/market}"
-PRODUCTOS="${BTC_PRODUCTOS:-BIP-20DEC30-CDE BTC-USD}"
+PRODUCTOS="${BTC_PRODUCTOS:-BIP-20DEC30-CDE BTC-USD TEK-19DEC30-CDE}"
+# Con BTC_LABORABLES definido pero vacio, ninguno.
+LABORABLES="${BTC_LABORABLES-TEK-19DEC30-CDE}"
 PAUSA="${CB_PAUSA:-1}"
 DIR="${BTC_DIR:-$HOME/PRC_Sentinel/btc}"
 LOTE="${BTC_LOTE:-200}"
@@ -133,7 +161,10 @@ AHORA="${BTC_AHORA:-$(date +%s)}"
 # la de ayer abierta y la cierra la siguiente, con sus valores definitivos.
 MARGEN="${BTC_MARGEN:-60}"
 # Señales: con BTC_AVISOS vacio (definido pero vacio) no se calculan ni se mandan.
-AVISOS="${BTC_AVISOS-BIP-20DEC30-CDE BTC-USD}"
+AVISOS="${BTC_AVISOS-BIP-20DEC30-CDE BTC-USD, TEK-19DEC30-CDE}"
+# Un grupo por linea, con los espacios normalizados; y todos sus productos.
+AV_GRUPOS=$(printf '%s\n' "$AVISOS" | tr ',' '\n' | awk 'NF { $1 = $1; print }')
+AV_TODOS=$(printf '%s\n' "$AV_GRUPOS" | tr '\n' ' ')
 AVHORAS="${BTC_AVISO_HORAS:-36}"
 TG_CONF="${BTC_TG_CONF:-$HOME/PRC_Thermal/thermal-guard.conf}"
 TG_API="${BTC_TG_API:-https://api.telegram.org}"
@@ -187,9 +218,18 @@ log(){ printf '%s %s\n' "$(date -u '+%Y-%m-%d %H:%M:%S')" "$1" >> "$LOG"; printf
 # Las señales mezclan productos: todos tienen que estar en BTC_PRODUCTOS. Al
 # cambiar el nombre del perpetuo, cambiar los dos. Va al log (lo primero que se
 # mira cuando el Wheel avisa de que el monitoreo no escribe).
-for p in $AVISOS; do
+AV_VISTOS=" "
+for p in $AV_TODOS; do
+  case "$p" in *[!A-Z0-9-]*) log "ERROR BTC_AVISOS: producto con caracteres no validos: $p; no hago nada"; exit 64 ;; esac
   case " $PRODUCTOS " in *" $p "*) ;; *) log "ERROR BTC_AVISOS: $p no esta en BTC_PRODUCTOS ($PRODUCTOS); no hago nada"; exit 64 ;; esac
+  case "$AV_VISTOS" in *" $p "*) log "ERROR BTC_AVISOS: $p esta en dos grupos (o dos veces); no hago nada"; exit 64 ;; esac
+  AV_VISTOS="$AV_VISTOS$p "
 done
+# (BTC_LABORABLES es solo una propiedad: uno que no este en BTC_PRODUCTOS no
+# molesta, simplemente no se baja.)
+
+# etiqueta <grupo>: el nombre del activo en los mensajes.
+etiqueta(){ case "$1" in BIP-*|BTC-*) echo BTC ;; TEK-*) echo "Tech 100" ;; *) echo "$1" ;; esac; }
 
 # Los cinco awk viajan con el script: sin uno de ellos no se escribe nada.
 for f in "$CALC" "$INDIC" "$FIBO" "$AVIS" "$LECTOR"; do
@@ -250,7 +290,8 @@ TABLA='CREATE TABLE IF NOT EXISTS cripto_vela (producto TEXT NOT NULL, marco TEX
 
 TABLA_IND='CREATE TABLE IF NOT EXISTS cripto_indicador (producto TEXT NOT NULL, marco TEXT NOT NULL, base TEXT NOT NULL, ts INTEGER NOT NULL, ema100 REAL, ema200 REAL, bb_media REAL, bb_sup REAL, bb_inf REAL, rl_centro REAL, rl_sup REAL, rl_inf REAL, rl_pendiente REAL, rl_r REAL, rl_ruptura INTEGER, cerrada INTEGER NOT NULL, version INTEGER NOT NULL, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, marco, base, ts)) WITHOUT ROWID'
 
-TABLA_AV='CREATE TABLE IF NOT EXISTS cripto_aviso (marco TEXT NOT NULL, ts INTEGER NOT NULL, tipo TEXT NOT NULL, producto TEXT NOT NULL, sentido INTEGER NOT NULL, precio REAL NOT NULL, nivel REAL, texto TEXT NOT NULL, creado INTEGER NOT NULL, enviado INTEGER, PRIMARY KEY (marco, ts, tipo)) WITHOUT ROWID'
+AV_COLS='grupo TEXT NOT NULL, marco TEXT NOT NULL, ts INTEGER NOT NULL, tipo TEXT NOT NULL, producto TEXT NOT NULL, sentido INTEGER NOT NULL, precio REAL NOT NULL, nivel REAL, texto TEXT NOT NULL, creado INTEGER NOT NULL, enviado INTEGER, PRIMARY KEY (grupo, marco, ts, tipo)'
+TABLA_AV="CREATE TABLE IF NOT EXISTS cripto_aviso ($AV_COLS) WITHOUT ROWID"
 
 TABLA_FIB='CREATE TABLE IF NOT EXISTS cripto_fibonacci (producto TEXT NOT NULL, tramo TEXT NOT NULL, nivel REAL NOT NULL, precio REAL NOT NULL, bajo_ts INTEGER NOT NULL, bajo REAL NOT NULL, alto_ts INTEGER NOT NULL, alto REAL NOT NULL, caida REAL NOT NULL, actualizado INTEGER NOT NULL, PRIMARY KEY (producto, tramo, nivel)) WITHOUT ROWID'
 
@@ -387,7 +428,8 @@ procesa(){
   CAMBIOS=$(cat "$TMPD/cambios.txt" 2>/dev/null || echo 0)
 
   # 4. Calcular. "Cerrada" se decide con CORTE (ahora menos el margen).
-  if ! awk -v producto="$P" -v ahora="$CORTE" -v desde="$DESDE" -v salida=json \
+  LAB=0; case " $LABORABLES " in *" $P "*) LAB=1 ;; esac
+  if ! awk -v producto="$P" -v ahora="$CORTE" -v desde="$DESDE" -v salida=json -v laborable="$LAB" \
           -v fuente="$FUENTE" -v actualizado="$AHORA" -f "$CALC" "$TMPD/serie.txt" \
           > "$TMPD/sentencias.txt" 2> "$TMPD/calc.err"; then
     log "ERROR $P: el calculo rechazo la serie: $(grep ERROR "$TMPD/calc.err" | head -1)"; return 2
@@ -399,7 +441,7 @@ procesa(){
   # 4b. Indicadores, sobre TODAS las velas (diarias y semanales, en tsv). Van
   #     en los mismos lotes que las velas a proposito: si un lote falla, no queda
   #     una vela nueva con el indicador de una version a medias de ella.
-  if ! awk -v producto="$P" -v ahora="$CORTE" -v desde=0 -v salida=tsv -f "$CALC" "$TMPD/serie.txt" \
+  if ! awk -v producto="$P" -v ahora="$CORTE" -v desde=0 -v salida=tsv -v laborable="$LAB" -f "$CALC" "$TMPD/serie.txt" \
           > "$TMPD/velas.tsv" 2>/dev/null || ! indicadores "$DESDE"; then
     log "ERROR $P: el calculo de indicadores fallo: $(error_de "$TMPD/ind.err")"; return 2
   fi
@@ -525,8 +567,16 @@ procesa(){
         cambios, escritas, (seco ? "calculadas sin escribir" : "escritas"), modo, ind, indmodo, fib, r["cierre"], abierta
     }' > "$TMPD/linea.txt"
   log "$(cat "$TMPD/linea.txt")"
-  [ "$HUECOS" -gt 0 ] && log "  huecos de $P: $(grep '^HUECO' "$TMPD/calc.err" | awk "$FECHA_AWK"' { printf "%s%s..%s", (NR > 1 ? ", " : ""), fecha($2), fecha($3) }' | head -c 400)"
+  # El detalle, solo de los huecos de los dias que esta pasada reescribe (en la
+  # carga completa, DESDE=0: todos). Los de antes ya se dijeron en su dia.
+  HDET=$(grep '^HUECO' "$TMPD/calc.err" | awk -v d="$DESDE" "$FECHA_AWK"' $3 + 0 >= d { printf "%s%s..%s", (n++ ? ", " : ""), fecha($2), fecha($3) }' | head -c 400)
+  [ -n "$HDET" ] && log "  huecos de $P: $HDET"
   [ "$CAMBIOS" -gt 0 ] && log "  AVISO $P: Coinbase cambio $CAMBIOS velas que ya estaban cerradas; quedaron sobrescritas"
+  # Uno de BTC_LABORABLES con velas en fin de semana: sus semanas se cierran el
+  # viernes, asi que la de una vela de sabado o domingo salio cerrada antes de
+  # tiempo. Hay que quitarlo de BTC_LABORABLES.
+  FINDE=$(printf '%s\n' "$RES" | sed -n 's/.* finde=\([0-9]*\).*/\1/p')
+  [ "${FINDE:-0}" -gt 0 ] && log "  AVISO $P: esta en BTC_LABORABLES pero Coinbase trae $FINDE velas de sabado o domingo; si ya cotiza el fin de semana, quitalo de BTC_LABORABLES"
   # Una reescritura completa con velas ya guardadas deberia ser rara (la
   # primera vez, una VERSION nueva o tras una pasada cortada): si sale en cada
   # pasada, algo no cuadra y esta linea lo deja a la vista.
@@ -535,7 +585,7 @@ procesa(){
   # Para las señales (paso 7): lo de este producto que hace falta, en tsv. Solo
   # si todo lo anterior salio bien: si no, este fichero .ok no existe y las
   # señales no se calculan en esta pasada (nunca a medias, con un solo producto).
-  case " $AVISOS " in *" $P "*)
+  case " $AV_TODOS " in *" $P "*)
     { awk -v producto="$P" -v desde="$AV_IND" -v salida=tsv -f "$INDIC" "$TMPD/velas.tsv" > "$TMPD/av.$P.ind" 2>/dev/null \
       && fib_por_vela "$P" && cp "$TMPD/velas.tsv" "$TMPD/av.$P.velas" && : > "$TMPD/av.$P.ok"; } \
       || { log "ERROR $P: no pude preparar lo que piden las señales"; return 1; } ;;
@@ -563,48 +613,73 @@ fib_por_vela(){
 # --- 7. Señales de mercado -------------------------------------------------------
 # guarda_senales: calcula las señales de las velas cerradas en los ultimos 7
 # dias y las guarda con INSERT OR IGNORE: una señal ya guardada no cambia ni se
-# vuelve a mandar. Solo si TODOS los productos de BTC_AVISOS salieron bien en
-# esta pasada; si no, el reparto entre perpetuo y spot saldria mal.
+# vuelve a mandar. Grupo a grupo (un activo cada uno, una llamada al calculo
+# cada uno): un grupo solo se calcula si TODOS sus productos salieron bien en
+# esta pasada (si no, el reparto entre perpetuo y spot saldria mal); si no, se
+# salta ese grupo y los demas se guardan igual. Devuelve 1 si no se pudo
+# preparar o guardar (aunque algun grupo diera 3 o 2: es lo que mas urge); si
+# no, el peor de los grupos: 3 si alguno no se calculo, 2 si su calculo fallo.
 guarda_senales(){
-  for P in $AVISOS; do
-    # 3: no es un fallo de las señales, pero tampoco salieron. Si dura (las
-    # velas pueden haber entrado y fallar algo despues), el Wheel avisa.
-    [ -e "$TMPD/av.$P.ok" ] || { log "señales: no se calculan en esta pasada porque $P no salio bien; las pendientes se mandan igual"; return 3; }
-  done
-  : > "$TMPD/av.corriente"
-  for P in $AVISOS; do
-    { awk -v p="$P" '{ print p "\tV\t" $0 }' "$TMPD/av.$P.velas" &&
-      awk -v p="$P" '{ print p "\tI\t" $0 }' "$TMPD/av.$P.ind" &&
-      awk -v p="$P" '{ print p "\tF\t" $0 }' "$TMPD/av.$P.fib"; } >> "$TMPD/av.corriente" \
-    || { log "ERROR no pude preparar la entrada de las señales"; return 1; }
-  done
+  : > "$TMPD/av.txt"; : > "$TMPD/av.corriente.todas"; rg_=0; gok_=0
+  printf '%s\n' "$AV_GRUPOS" > "$TMPD/av.grupos"
   # Sin la tabla, esta pasada la crea, en el MISMO lote que las señales, y lo de
   # los ultimos dias se guarda como ya enviado (0): la primera pasada no manda
   # señales viejas de golpe. Si el lote falla, tampoco queda la tabla, y la
   # pasada siguiente vuelve a ser "la primera".
   ENV0=""; [ "$AV_NUEVA" = 1 ] && ENV0=0
-  if ! awk -v orden="$AVISOS" -v desde="$AV_DESDE" -v salida=json -v creado="$AHORA" -v enviado="$ENV0" \
-         -f "$AVIS" "$TMPD/av.corriente" > "$TMPD/av.txt" 2> "$TMPD/av.err"; then
-    log "ERROR el calculo de las señales fallo: $(error_de "$TMPD/av.err")"; return 2
-  fi
+  while read -r gl_; do
+    [ -n "$gl_" ] || continue
+    G=${gl_%% *}; GN=$(etiqueta "$G"); falta_=""
+    for P in $gl_; do [ -e "$TMPD/av.$P.ok" ] || { falta_=$P; break; }; done
+    if [ -n "$falta_" ]; then
+      # 3: no es un fallo de las señales, pero tampoco salieron. Si dura (las
+      # velas pueden haber entrado y fallar algo despues), el Wheel avisa.
+      log "señales de $GN: no se calculan en esta pasada porque $falta_ no salio bien; las pendientes se mandan igual"
+      [ "$rg_" -lt 3 ] && rg_=3
+      continue
+    fi
+    : > "$TMPD/av.corriente"
+    for P in $gl_; do
+      { awk -v p="$P" '{ print p "\tV\t" $0 }' "$TMPD/av.$P.velas" &&
+        awk -v p="$P" '{ print p "\tI\t" $0 }' "$TMPD/av.$P.ind" &&
+        awk -v p="$P" '{ print p "\tF\t" $0 }' "$TMPD/av.$P.fib"; } >> "$TMPD/av.corriente" \
+      || { log "ERROR no pude preparar la entrada de las señales de $GN"; return 1; }
+    done
+    cat "$TMPD/av.corriente" >> "$TMPD/av.corriente.todas" || { log "ERROR no pude preparar la entrada de las señales"; return 1; }
+    if ! awk -v grupo="$G" -v orden="$gl_" -v desde="$AV_DESDE" -v salida=json -v creado="$AHORA" -v enviado="$ENV0" \
+           -f "$AVIS" "$TMPD/av.corriente" > "$TMPD/av.grupo" 2> "$TMPD/av.err"; then
+      log "ERROR el calculo de las señales de $GN fallo: $(error_de "$TMPD/av.err")"
+      [ "$rg_" -lt 2 ] && rg_=2
+      continue
+    fi
+    cat "$TMPD/av.grupo" >> "$TMPD/av.txt" || { log "ERROR no pude preparar las señales"; return 1; }
+    gok_=$((gok_ + 1))
+  done < "$TMPD/av.grupos"
   AV_N=$(wc -l < "$TMPD/av.txt" | tr -d ' ')
   if [ "$SECO" = 1 ]; then
     mkdir -p "$DIR/seco"
     awk 'BEGIN { printf "[" } { printf "%s%s", (NR > 1 ? "," : ""), $0 } END { print "]" }' "$TMPD/av.txt" > "$DIR/seco/senales.json"
-    cp "$TMPD/av.corriente" "$DIR/seco/senales.corriente"
+    cp "$TMPD/av.corriente.todas" "$DIR/seco/senales.corriente"
     log "señales: $AV_N en las velas cerradas de los ultimos 7 dias (calculadas sin escribir)"
-    return 0
+    return $rg_
   fi
+  # La tabla solo se crea si se calculo algun grupo: sin ninguno, la pasada
+  # siguiente sigue siendo "la primera". Con alguno saltado se crea igual (si
+  # no, un grupo que falla siempre dejaria sin señales a los demas); las
+  # señales de los ultimos dias de ese grupo llegaran despues como nuevas, y de
+  # ellas solo se mandan las de menos de BTC_AVISO_HORAS.
+  [ "$AV_NUEVA" = 1 ] && [ "$gok_" = 0 ] && return $rg_
   # Las que ya estan guardadas no se vuelven a mandar a rqlite: un INSERT OR
   # IGNORE sin nada nuevo seria una escritura de Raft en cada pasada para nada.
   # Se leen sus claves (lectura, sin Raft); si no se puede, van todas.
+  # La clave es lo que va tras la sentencia: grupo, marco, ts, tipo.
   if [ "$AV_OK" = 1 ] && [ "$AV_N" -gt 0 ]; then
-    printf '[["SELECT marco,ts,tipo FROM cripto_aviso WHERE ts>=?",%s]]' "$((AV_DESDE - 604800))" > "$TMPD/q.json"
+    printf '[["SELECT grupo,marco,ts,tipo FROM cripto_aviso WHERE ts>=?",%s]]' "$((AV_DESDE - 604800))" > "$TMPD/q.json"
     if rq 'query?level=weak' "$TMPD/q.json"; then
       awk 'NR == FNR { t = t $0; next }
            FNR == 1 { if (t ~ /"values":\[\[/) { sub(/.*"values":\[\[/, "", t); sub(/\]\].*$/, "", t)
                         n = split(t, f, /\],\[/); for (i = 1; i <= n; i++) { gsub(/"/, "", f[i]); ya[f[i]] = 1 } } }
-           { s = $0; sub(/^\["[^"]*",/, "", s); split(s, a, ","); k = a[1] "," a[2] "," a[3]; gsub(/"/, "", k)
+           { s = $0; sub(/^\["[^"]*",/, "", s); split(s, a, ","); k = a[1] "," a[2] "," a[3] "," a[4]; gsub(/"/, "", k)
              if (!(k in ya)) print }' "$TMPD/rq.out" "$TMPD/av.txt" > "$TMPD/av.nuevas" \
         && mv "$TMPD/av.nuevas" "$TMPD/av.txt"
     fi
@@ -612,7 +687,7 @@ guarda_senales(){
   { [ "$AV_NUEVA" = 1 ] && printf '["%s"]\n' "$TABLA_AV"; cat "$TMPD/av.txt"; } \
   | awk 'BEGIN { printf "[" } { printf "%s%s", (NR > 1 ? "," : ""), $0 } END { print "]" }' > "$TMPD/av.json" \
     || { log "ERROR no pude preparar el lote de las señales"; return 1; }
-  [ "$(wc -c < "$TMPD/av.json" | tr -d ' ')" -gt 3 ] || return 0      # "[]": nada que escribir
+  [ "$(wc -c < "$TMPD/av.json" | tr -d ' ')" -gt 3 ] || return $rg_      # "[]": nada que escribir
   rq 'execute?transaction' "$TMPD/av.json" || { log "ERROR fallo al guardar las señales ($ERRMSG); la proxima pasada lo repite"; return 1; }
   # Cuantas entraron: con la tabla nueva, todas (y el CREATE tambien da un
   # rows_affected, que no es una señal); si no, las que rqlite dice.
@@ -623,7 +698,25 @@ guarda_senales(){
     if [ -n "$ENV0" ]; then log "señales: $nuevas guardadas sin mandar (la tabla es nueva: son de antes)"
     else log "señales: $nuevas nuevas"; fi
   fi
-  return 0
+  return $rg_
+}
+
+# migra_avisos: una cripto_aviso de antes de los grupos (clave marco, ts, tipo,
+# sin columna grupo) pasa a la de ahora, con todas sus filas, en UNA
+# transaccion: o queda la nueva entera o sigue la vieja. A cada señal vieja le
+# toca el grupo de su producto segun BTC_AVISOS (la de un producto que ya no
+# este en ningun grupo, el propio producto). Deja 0 en MIG_OK si quedo bien.
+migra_avisos(){
+  MIG_OK=0
+  caso_=$(printf '%s\n' "$AV_GRUPOS" | awk '{ for (i = 1; i <= NF; i++) printf " WHEN '"'"'%s'"'"' THEN '"'"'%s'"'"'", $i, $1 }')
+  grp_="CASE producto$caso_ ELSE producto END"; [ -n "$caso_" ] || grp_=producto
+  printf '[["DROP TABLE IF EXISTS cripto_aviso_nueva"],["CREATE TABLE cripto_aviso_nueva (%s) WITHOUT ROWID"],["INSERT INTO cripto_aviso_nueva (grupo,marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) SELECT %s,marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado FROM cripto_aviso"],["DROP TABLE cripto_aviso"],["ALTER TABLE cripto_aviso_nueva RENAME TO cripto_aviso"]]' \
+    "$AV_COLS" "$grp_" > "$TMPD/mig.json"
+  rq 'execute?transaction' "$TMPD/mig.json" || { log "ERROR no pude pasar la tabla cripto_aviso a la clave con grupo ($ERRMSG); las señales no salen hasta que se pueda (lo reintenta cada pasada)"; return 1; }
+  printf '[["SELECT COUNT(*) FROM cripto_aviso"]]' > "$TMPD/q.json"
+  n_=$(rq 'query?level=weak' "$TMPD/q.json" && sed -n 's/.*"values":\[\[\([0-9]*\)\]\].*/\1/p' "$TMPD/rq.out")
+  log "migrada la tabla cripto_aviso a la clave (grupo, marco, ts, tipo): ${n_:-?} señales, cada una con el grupo de su producto"
+  MIG_OK=1
 }
 
 # estado_senales <rc del paso 7> [limpiar]: apunta en sentinel_vigia (clave
@@ -687,42 +780,62 @@ tg_envia(){
 # con -1 (caducada) sin mandarlas: ya no sirven para operar (Telegram caido
 # dias, etc.). Mientras tanto, el Wheel ya habra avisado de que no salen.
 envia_senales(){
-  printf '[["SELECT marco,ts,tipo,texto FROM cripto_aviso WHERE enviado IS NULL ORDER BY ts,marco,tipo LIMIT 200"]]' > "$TMPD/q.json"
+  printf '[["SELECT grupo,marco,ts,tipo,texto FROM cripto_aviso WHERE enviado IS NULL ORDER BY ts,grupo,marco,tipo LIMIT 200"]]' > "$TMPD/q.json"
   rq 'query?level=weak' "$TMPD/q.json" || { log "ERROR no pude leer las señales pendientes ($ERRMSG)"; return 1; }
-  # Fila: ["1d",1794528000,"fib","texto"]. Los textos no llevan comillas,
-  # barras ni corchetes (avisos-calculo.awk no los usa), asi que el primer "]]"
-  # cierra "values" y "],[" separa filas. Salida: E (se manda), R (se manda en
-  # la pasada siguiente: un mensaje lleva 25 como mucho, por el tope de 4096
-  # caracteres de Telegram) o V (vieja: se marca con -1 sin mandarla).
-  awk -v ahora="$AHORA" -v vig=$((AVHORAS * 3600)) '{ t = t $0 } END {
+  # Fila: ["BIP-20DEC30-CDE","1d",1794528000,"fib","texto"]. Los textos no
+  # llevan comillas, barras ni corchetes (avisos-calculo.awk no los usa), asi
+  # que el primer "]]" cierra "values" y "],[" separa filas. Salida: E (se
+  # manda), R (se manda en la pasada siguiente: un mensaje lleva 25 como mucho,
+  # por el tope de 4096 caracteres de Telegram) o V (vieja: se marca con -1 sin
+  # mandarla); despues grupo, marco, ts, tipo y texto.
+  # La semanal de un grupo de BTC_LABORABLES (su principal, el TEK) cierra al
+  # acabar el viernes, 5 dias tras el lunes, y no el domingo: sus 36 h cuentan
+  # desde ahi.
+  awk -v ahora="$AHORA" -v vig=$((AVHORAS * 3600)) -v lab=" $LABORABLES " '{ t = t $0 } END {
       if (t !~ /"values":\[\[/) exit 0
       sub(/.*"values":\[\[/, "", t); sub(/\]\].*$/, "", t)
       n = split(t, f, /\],\[/)
       for (i = 1; i <= n; i++) {
-        r = f[i]; m = substr(r, 2, 2); r = substr(r, 6)
+        r = f[i]
+        if (!match(r, /^"[A-Z0-9-]+",/)) continue
+        g = substr(r, 2, RLENGTH - 3); r = substr(r, RLENGTH + 1)
+        m = substr(r, 2, 2); r = substr(r, 6)
         ts = substr(r, 1, index(r, ",") - 1); r = substr(r, index(r, ",") + 2)
         tp = substr(r, 1, index(r, "\"") - 1); x = substr(r, index(r, "\"") + 3); sub(/"$/, "", x)
         if ((m != "1d" && m != "1w") || ts !~ /^[0-9]+$/ || tp !~ /^[a-z0-9]+$/) continue
-        cierre = ts + ((m == "1d") ? 86400 : 604800)
+        cierre = ts + ((m == "1d") ? 86400 : (index(lab, " " g " ") ? 432000 : 604800))
         c = (cierre + vig < ahora) ? "V" : ((++ne > 25) ? "R" : "E")
-        printf "%s\t%s\t%s\t%s\t%s\n", c, m, ts, tp, x
+        printf "%s\t%s\t%s\t%s\t%s\t%s\n", c, g, m, ts, tp, x
       } }' "$TMPD/rq.out" > "$TMPD/pend.txt" || { log "ERROR no pude leer las señales pendientes"; return 1; }
   [ -s "$TMPD/pend.txt" ] || return 0
   NE=$(grep -c '^E' "$TMPD/pend.txt"); NV=$(grep -c '^V' "$TMPD/pend.txt"); NR_=$(grep -c '^R' "$TMPD/pend.txt")
   er_=0; MANDADAS=0
   if [ "$NE" -gt 0 ]; then
-    MSG=$(printf '📊 BTC: señales al cierre\n'
-          awk -F'\t' '$1 == "E" { print "• " $5 }' "$TMPD/pend.txt"
-          awk -F'\t' '$1 == "E" && $5 ~ / Spot, / { s = 1 } END { exit !s }' "$TMPD/pend.txt" \
-            && printf 'Spot = BTC-USD, solo donde al perpetuo le falta historia.\n'
-          printf 'Lo manda %s.' "$FUENTE")
+    # Una parte por grupo: primero los de BTC_AVISOS en su orden, despues los
+    # que ya no esten (señales de antes de quitar un grupo), por orden de
+    # llegada. Con un solo grupo, el mensaje es el de siempre.
+    PRIN_=$(printf '%s\n' "$AV_GRUPOS" | awk '{ printf "%s ", $1 }')
+    ETIQ_=$(for g_ in $(awk -F'\t' '$1 == "E" { print $2 }' "$TMPD/pend.txt" | sort -u); do printf '%s\t%s\n' "$g_" "$(etiqueta "$g_")"; done)
+    MSG=$(printf '%s\n' "$ETIQ_" | awk -F'\t' -v orden="$PRIN_" -v fuente="$FUENTE" '
+        NR == FNR { if (NF >= 2) et[$1] = $2; next }
+        $1 == "E" { if (!($2 in nl)) { nl[$2] = 0; lleg[++nll] = $2 }
+                    L[$2, ++nl[$2]] = $6; if ($6 ~ / Spot, /) spot[$2] = 1 }
+        function parte(g,   i) {
+          if (!(g in nl) || (g in hecho)) return
+          hecho[g] = 1; printf "%s📊 %s: señales al cierre\n", (np++ ? "\n" : ""), ((g in et) ? et[g] : g)
+          for (i = 1; i <= nl[g]; i++) print "• " L[g, i]
+          if (spot[g]) print "Spot = BTC-USD, solo donde al perpetuo le falta historia."
+        }
+        END { k = split(orden, O, " "); for (i = 1; i <= k; i++) parte(O[i])
+              for (i = 1; i <= nll; i++) parte(lleg[i])
+              printf "Lo manda %s.", fuente }' - "$TMPD/pend.txt")
     if tg_envia "$MSG"; then MANDADAS=1
     else log "AVISO: Telegram no acepto las señales ($ERRMSG); siguen pendientes y se reintenta en la proxima pasada"; er_=1; fi
   fi
   awk -F'\t' -v ahora="$AHORA" -v mandadas="$MANDADAS" '
       ($1 == "E" && mandadas) || $1 == "V" {
-        printf "%s[\"UPDATE cripto_aviso SET enviado=? WHERE marco=? AND ts=? AND tipo=? AND enviado IS NULL\",%d,\"%s\",%s,\"%s\"]", \
-          (n++ ? "," : "["), ($1 == "E") ? ahora : -1, $2, $3, $4 }
+        printf "%s[\"UPDATE cripto_aviso SET enviado=? WHERE grupo=? AND marco=? AND ts=? AND tipo=? AND enviado IS NULL\",%d,\"%s\",\"%s\",%s,\"%s\"]", \
+          (n++ ? "," : "["), ($1 == "E") ? ahora : -1, $2, $3, $4, $5 }
       END { if (n) print "]" }' "$TMPD/pend.txt" > "$TMPD/marca.json"
   if [ -s "$TMPD/marca.json" ]; then
     rq 'execute?transaction' "$TMPD/marca.json" || {
@@ -755,10 +868,23 @@ prepara_tabla cripto_indicador "$TABLA_IND"; IND_OK=$OK
 prepara_tabla cripto_fibonacci "$TABLA_FIB"
 # cripto_aviso no se crea aqui: la crea guarda_senales junto con sus primeras
 # señales (ver alli por que).
-AV_OK=0; AV_NUEVA=0
-if [ -n "$AVISOS" ]; then
+AV_OK=0; AV_NUEVA=0; AV_VIEJA=0; MIG_OK=1
+if [ -n "$AV_GRUPOS" ]; then
   tabla_existe cripto_aviso; r=$?
   case "$r" in 0) AV_OK=1 ;; 1) AV_NUEVA=1 ;; *) log "ERROR no puedo consultar rqlite en $RQ ($ERRMSG)"; exit 1 ;; esac
+  # ¿Es la de antes de los grupos? Su CREATE no tiene la columna grupo.
+  if [ "$AV_OK" = 1 ]; then
+    printf '[["SELECT sql FROM sqlite_master WHERE type=? AND name=?","table","cripto_aviso"]]' > "$TMPD/q.json"
+    rq 'query?level=weak' "$TMPD/q.json" || { log "ERROR no puedo consultar rqlite en $RQ ($ERRMSG)"; exit 1; }
+    grep -q 'grupo TEXT' "$TMPD/rq.out" || AV_VIEJA=1
+  fi
+  if [ "$AV_VIEJA" = 1 ]; then
+    if [ "$SECO" = 1 ]; then
+      log "la tabla cripto_aviso es de antes de los grupos: una pasada normal la migrara (con --seco no se toca)"
+    else
+      migra_avisos
+    fi
+  fi
 fi
 
 final=0
@@ -769,10 +895,15 @@ done
 
 # 7. Señales: se calculan con lo de esta pasada y se mandan las pendientes
 #    (tambien las que quedaron de una pasada anterior en la que Telegram fallo).
-if [ -n "$AVISOS" ]; then
-  guarda_senales; r7=$?
-  if [ "$SECO" = 0 ] && [ "$AV_OK" = 1 ]; then
-    envia_senales; r=$?; [ "$r" -gt "$r7" ] && r7=$r
+if [ -n "$AV_GRUPOS" ]; then
+  if [ "$MIG_OK" = 1 ]; then
+    guarda_senales; r7=$?
+    if [ "$SECO" = 0 ] && [ "$AV_OK" = 1 ]; then
+      envia_senales; r=$?; [ "$r" -gt "$r7" ] && r7=$r
+    fi
+  else
+    # La tabla sigue siendo la de antes: ni guardar ni mandar con la clave nueva.
+    r7=1
   fi
   [ "$r7" -gt "$final" ] && final=$r7
   [ "$SECO" = 0 ] && estado_senales "$r7"

@@ -80,6 +80,39 @@ if command -v node >/dev/null 2>&1; then
   igual "A5 cada sentencia JSON es valida y lleva 16 parametros" "si" "$r"
 fi
 
+# Laborable (TEK: solo de lunes a viernes). D0 es lunes: la semana del 01/01 de
+# lunes a viernes, el lunes 08/01, sin el martes 09/01 (festivo) y el miercoles.
+lab(){ # lab <laborable> <ahora> <fichero>  -> $T/a6.out y $T/a6.err
+  awk -v producto=TEK-T -v ahora="$2" -v desde=0 -v salida=tsv -v laborable="$1" -f "$CALC" "$3" > "$T/a6.out" 2> "$T/a6.err"; }
+for k in 0 1 2 3 4; do printf '%s 100 110 90 105 1\n' "$((D0 + k * 86400))"; done > "$T/a6.txt"
+lab 1 $((D0 + 5 * 86400)) "$T/a6.txt"
+igual "A6 laborable: la semana de lunes a viernes cierra al acabar el viernes (sabado 00:00), con 5 dias" "1 5" \
+  "$(awk -F"$TAB" '$1 == "1w" { print $12, $13 }' "$T/a6.out")"
+lab 1 $((D0 + 5 * 86400 - 1)) "$T/a6.txt"
+igual "A6 ...un segundo antes, aun abierta" "0" "$(awk -F"$TAB" '$1 == "1w" { print $12 }' "$T/a6.out")"
+lab 0 $((D0 + 5 * 86400)) "$T/a6.txt"
+igual "A6 sin laborable, esa misma semana sigue abierta hasta el domingo" "0" "$(awk -F"$TAB" '$1 == "1w" { print $12 }' "$T/a6.out")"
+{ cat "$T/a6.txt"; printf '%s 100 110 90 105 1\n' "$((D0 + 7 * 86400))" "$((D0 + 9 * 86400))"; } > "$T/a6b.txt"
+lab 1 $((D0 + 9 * 86400 + 3600)) "$T/a6b.txt"
+igual "A6 laborable: el fin de semana no es hueco; el martes que falta (festivo), si" "huecos=1 tramos=1|HUECO $((D0 + 8 * 86400)) $((D0 + 8 * 86400))" \
+  "$(grep -o 'huecos=[0-9]* tramos=[0-9]*' "$T/a6.err")|$(grep '^HUECO' "$T/a6.err")"
+igual "A6 ...y la Heikin Ashi y las semanas no cambian por ser laborable" \
+  "$(awk -v producto=TEK-T -v ahora=$((D0 + 9 * 86400 + 3600)) -v desde=0 -v salida=tsv -f "$CALC" "$T/a6b.txt" 2>/dev/null | cut -f1-11,13)" "$(cut -f1-11,13 "$T/a6.out")"
+lab 0 $((D0 + 9 * 86400 + 3600)) "$T/a6b.txt"
+igual "A6 sin laborable, el fin de semana si cuenta como hueco" "huecos=3 tramos=2" "$(grep -o 'huecos=[0-9]* tramos=[0-9]*' "$T/a6.err")"
+# Un hueco que cruza el fin de semana: del viernes al lunes faltan los dos habiles.
+{ for k in 0 1 2 3; do printf '%s 100 110 90 105 1\n' "$((D0 + k * 86400))"; done; printf '%s 100 110 90 105 1\n' "$((D0 + 8 * 86400))"; } > "$T/a6c.txt"
+lab 1 $((D0 + 8 * 86400 + 3600)) "$T/a6c.txt"
+igual "A6 laborable: faltan el viernes y el lunes: 2 dias en 1 tramo, del viernes al lunes" "huecos=2 tramos=1|HUECO $((D0 + 4 * 86400)) $((D0 + 7 * 86400))" \
+  "$(grep -o 'huecos=[0-9]* tramos=[0-9]*' "$T/a6.err")|$(grep '^HUECO' "$T/a6.err")"
+{ cat "$T/a6.txt"; printf '%s 100 110 90 105 1\n' "$((D0 + 5 * 86400))"; } > "$T/a6d.txt"
+lab 1 $((D0 + 6 * 86400)) "$T/a6d.txt"
+igual "A6 laborable con una vela de sabado: el resumen la cuenta (finde=1) para que la pasada lo diga" "finde=1" "$(grep -o 'finde=[0-9]*' "$T/a6.err")"
+lab 0 $((D0 + 6 * 86400)) "$T/a6d.txt"
+igual "A6 ...sin laborable no se cuenta" "finde=0" "$(grep -o 'finde=[0-9]*' "$T/a6.err")"
+lab 2 $((D0 + 5 * 86400)) "$T/a6.txt"; r=$?
+igual "A6 laborable que no es 0 ni 1: sale con 2 sin emitir nada" "2|0|si" "$r|$(wc -l < "$T/a6.out" | tr -d ' ')|$(grep -q 'ERROR laborable' "$T/a6.err" && echo si)"
+
 # ============================ B. Lector de Coinbase ===========================
 lee(){ printf '%s' "$1" | awk -f "$LECTOR" > "$T/b.out" 2>/dev/null; echo $?; }
 r=$(lee '{"candles":[{"start":"1704153600","low":"100","high":"120","open":"105","close":"115","volume":"2"},{"start":"1704067200","low":"90","high":"110","open":"100","close":"105","volume":"1"}]}')
@@ -460,16 +493,24 @@ r8=$(O3="BIP-T bad;id" v3 "$T/v1.txt")
 igual "V3 campos de menos, clase rara, producto fuera de orden, velas desordenadas, sin desde, enviado raro, niveles desordenados, producto con caracteres raros: 2" \
   "2/0 2/0 2/0 2/0 2 2/0 2/0 2/0" "$r1 $r2 $r3 $r4 $r5 $r6 $r7 $r8"
 
-# JSON para rqlite: INSERT OR IGNORE con la clave (marco, ts, tipo); enviado null
-# (pendiente) o 0 (no se manda).
+# JSON para rqlite: INSERT OR IGNORE con la clave (grupo, marco, ts, tipo);
+# enviado null (pendiente) o 0 (no se manda). Sin grupo, el del primero de orden.
 awk -v orden="$P" -v desde=$D0 -v salida=json -v creado=777 -f "$AVIS" "$T/v1.txt" > "$T/v4.json" 2>/dev/null
-igual "V4 la sentencia, entera" \
-  "[\"INSERT OR IGNORE INTO cripto_aviso(marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES(?,?,?,?,?,?,?,?,?,?)\",\"1d\",$D2,\"ema100\",\"$P\",1,110,105,\"📈 Perpetuo, diaria del 02/01: cierra por encima de la EMA 100: cierre 110, EMA 105\",777,null]" \
+igual "V4 la sentencia, entera (grupo = el principal)" \
+  "[\"INSERT OR IGNORE INTO cripto_aviso(grupo,marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES(?,?,?,?,?,?,?,?,?,?,?)\",\"$P\",\"1d\",$D2,\"ema100\",\"$P\",1,110,105,\"📈 Perpetuo, diaria del 02/01: cierra por encima de la EMA 100: cierre 110, EMA 105\",777,null]" \
   "$(head -1 "$T/v4.json")"
+igual "V4 con un grupo dado, ese va en la clave" "\"GRUPO-X\",\"1d\",$D2,\"ema100\"" \
+  "$(awk -v grupo=GRUPO-X -v orden="$P" -v desde=$D0 -v salida=json -v creado=777 -f "$AVIS" "$T/v1.txt" 2>/dev/null | head -1 | sed 's/^\["[^"]*",//' | cut -d, -f1-4)"
+r=$(awk -v grupo='mal grupo' -v orden="$P" -v desde=$D0 -v salida=json -f "$AVIS" "$T/v1.txt" > "$T/v4b.out" 2> "$T/v4b.err"; echo "$?/$(wc -l < "$T/v4b.out" | tr -d ' ')")
+igual "V4 un grupo con caracteres raros: sale con 2 sin señales" "2/0 si" "$r $(grep -q 'grupo no valido' "$T/v4b.err" && echo si)"
+# El Tech 100 se llama asi en el texto (y la referencia igual).
+sed "s/^$P$TAB/TEK-T$TAB/" "$T/v1.txt" > "$T/v4c.txt"
+igual "V4 las señales de TEK dicen 'Tech 100'" "📈 Tech 100, diaria del 02/01: cierra por encima de la EMA 100: cierre 110, EMA 105" \
+  "$(awk -v orden=TEK-T -v desde=$D0 -v salida=tsv -f "$AVIS" "$T/v4c.txt" 2>/dev/null | head -1 | cut -f8)"
 igual "V4 con enviado=0, todas van a 0" "7" "$(awk -v orden="$P" -v desde=$D0 -v salida=json -v creado=777 -v enviado=0 -f "$AVIS" "$T/v1.txt" 2>/dev/null | grep -c ',777,0]$')"
 if command -v node >/dev/null 2>&1; then
-  r=$(node -e 'const l = require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean); let ok = 0; for (const x of l) { const a = JSON.parse(x); if (a.length === 11 && !/["\\<>&]/.test(a[8])) ok++; } console.log(ok + "/" + l.length);' "$T/v4.json" 2>&1)
-  igual "V4 JSON valido, 10 valores, y textos sin comillas, barras ni <>&" "7/7" "$r"
+  r=$(node -e 'const l = require("fs").readFileSync(process.argv[1], "utf8").split("\n").filter(Boolean); let ok = 0; for (const x of l) { const a = JSON.parse(x); if (a.length === 12 && a[1] === "BIP-T" && !/["\\<>&]/.test(a[9])) ok++; } console.log(ok + "/" + l.length);' "$T/v4.json" 2>&1)
+  igual "V4 JSON valido, 11 valores (grupo el primero), y textos sin comillas, barras ni <>&" "7/7" "$r"
 
   # Series al azar: dos productos (uno con historia corta, para que el reparto
   # se note), indicadores cortos para que haya muchas señales, y Fibonacci con
@@ -561,7 +602,7 @@ if [ "${libres:-0}" = 1 ]; then
     # fijos; C16 prueba el spot y el perpetuo juntos (PRODS).
     env HOME="$T/casa" CURL_HOME="$T/casa" SENTINEL_BASE="$T/base" RQLITE="$RQ" RQLITE_CRED="${CRED:-$T/prueba.curlrc}" \
         CB_API="http://127.0.0.1:$PCB" CB_PAUSA=0 CB_ESPERA=0 BTC_DIR="$T/dir" BTC_AHORA="$a" \
-        BTC_PRODUCTOS="${PRODS:-BTC-USD}" BTC_LOTE="${LOTE_P:-200}" ${AVP+"BTC_AVISOS=$AVP"} ${TGC+"BTC_TG_CONF=$TGC"} BTC_TG_API="http://127.0.0.1:$PCB" ${AVH:+BTC_AVISO_HORAS=$AVH} sh "$SCRIPT" "$@" > "$T/salida" 2>&1
+        BTC_PRODUCTOS="${PRODS:-BTC-USD}" BTC_LOTE="${LOTE_P:-200}" ${AVP+"BTC_AVISOS=$AVP"} ${LABP+"BTC_LABORABLES=$LABP"} ${TGC+"BTC_TG_CONF=$TGC"} BTC_TG_API="http://127.0.0.1:$PCB" ${AVH:+BTC_AVISO_HORAS=$AVH} sh "$SCRIPT" "$@" > "$T/salida" 2>&1
   }
   comprueba(){ node "$AQUI/comprueba.js" "$RQ" "prueba:clave-prueba" "$E" "${1:-BTC-USD}" 2>&1; }
   sql1(){ curl -q -s -K "$T/prueba.curlrc" -G "$RQ/db/query" --data-urlencode "q=$1" | sed -n 's/.*"values":\[\[\([^]]*\)\]\].*/\1/p'; }
@@ -1056,7 +1097,7 @@ if [ "${libres:-0}" = 1 ]; then
   A=$((AHORA5 + 930))
   bd=$(awk -v a=$A 'BEGIN { split("1d 1d 1w 1w", m, " "); split("35 37 35 37", h, " ")
          for (k = 1; k <= 4; k++) { d = (m[k] == "1d") ? 86400 : 604800
-           printf "%s[\"INSERT INTO cripto_aviso(marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES(?,?,?,?,?,?,?,?,?,?)\",\"%s\",%d,\"borde\",\"BTC-USD\",1,1,1,\"borde %s %s h\",%d,null]", (k > 1 ? "," : "["), m[k], a - d - h[k] * 3600, m[k], h[k], a }
+           printf "%s[\"INSERT INTO cripto_aviso(grupo,marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES(?,?,?,?,?,?,?,?,?,?,?)\",\"BIP-20DEC30-CDE\",\"%s\",%d,\"borde\",\"BTC-USD\",1,1,1,\"borde %s %s h\",%d,null]", (k > 1 ? "," : "["), m[k], a - d - h[k] * 3600, m[k], h[k], a }
          print "]" }')
   ejecuta "$bd"; t0=$(tg n); corre $A; r=$?
   igual "C31 el borde de las 36 h: diaria y semanal cerradas hace 35 h se mandan; hace 37 h caducan" "0|1|• borde 1w 35 h|• borde 1d 35 h|2,2" \
@@ -1065,7 +1106,7 @@ if [ "${libres:-0}" = 1 ]; then
   # Un mensaje lleva 25 como mucho (Telegram corta en 4096 caracteres): el resto,
   # en las pasadas siguientes. Con 30 señales de prueba (semanas que cerraron
   # hace unos minutos), que luego se borran.
-  sp=$(awk -v a=$AHORA5 'BEGIN { for (k = 1; k <= 30; k++) printf "%s[\"INSERT INTO cripto_aviso(marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES(?,?,?,?,?,?,?,?,?,?)\",\"1w\",%d,\"prueba\",\"BTC-USD\",1,1,1,\"señal de prueba %d\",%d,null]", (k > 1 ? "," : "["), a - 604800 - k * 60, k, a; print "]" }')
+  sp=$(awk -v a=$AHORA5 'BEGIN { for (k = 1; k <= 30; k++) printf "%s[\"INSERT INTO cripto_aviso(grupo,marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES(?,?,?,?,?,?,?,?,?,?,?)\",\"BIP-20DEC30-CDE\",\"1w\",%d,\"prueba\",\"BTC-USD\",1,1,1,\"señal de prueba %d\",%d,null]", (k > 1 ? "," : "["), a - 604800 - k * 60, k, a; print "]" }')
   ejecuta "$sp"; tot=$(pend)
   if [ "${tot:-0}" = 30 ]; then
     t0=$(tg n); AVH=1000; corre $((AHORA5 + 950)); r=$?
@@ -1124,14 +1165,16 @@ if [ "${libres:-0}" = 1 ]; then
   printf 'BEGIN {\n' > "$T/btc2/avisos-calculo.awk"
   corre $((AHORA5 + 3300)); r=$?; SCRIPT=$SCRIPT_BUENO
   igual "C37 con el awk de señales roto: las velas entran, y sale con 2 diciendo por que" "2|si|si|$((AHORA5 + 3300)),2" \
-    "$r|$([ "$(sql1 "SELECT MAX(actualizado) FROM cripto_vela")" = $((AHORA5 + 3300)) ] && echo si)|$(grep -q 'el calculo de las señales fallo: ..*' "$T/salida" && echo si)|$(vigia)"
+    "$r|$([ "$(sql1 "SELECT MAX(actualizado) FROM cripto_vela")" = $((AHORA5 + 3300)) ] && echo si)|$(grep -q 'el calculo de las señales de BTC fallo: ..*' "$T/salida" && echo si)|$(vigia)"
 
   # Los valores por defecto, los de 014: BTC_AVISOS y el fichero del bot de
   # thermal-guard en ~/PRC_Thermal (el HOME de las pasadas es $T/casa).
   mkdir -p "$T/casa/PRC_Thermal"; printf 'BOT_TOKEN="tok-casa"\nCHAT_ID="77"\n' > "$T/casa/PRC_Thermal/thermal-guard.conf"
-  unset AVP TGC; reciente; t0=$(tg n); corre $((AHORA5 + 3600)); r=$?
-  igual "C38 con los valores por defecto: señales del perpetuo y del spot, y el bot de thermal-guard" "0|1|tok-casa|77|0" \
-    "$r|$(( $(tg n) - t0 ))|$(tg meta | cut -d'|' -f1)|$(tg meta | cut -d'|' -f2)|$(pend)"
+  # Los productos tambien son los de por defecto (con el TEK, que entra aqui por
+  # primera vez y del que salen las señales de sus ultimos dias).
+  unset AVP TGC; reciente; t0=$(tg n); PRODS="$AV2 TEK-19DEC30-CDE"; corre $((AHORA5 + 3600)); r=$?; PRODS="$AV2"
+  igual "C38 con los valores por defecto: señales de BTC (perpetuo y spot) y del Tech 100, y el bot de thermal-guard" "0|1|tok-casa|77|0|si" \
+    "$r|$(( $(tg n) - t0 ))|$(tg meta | cut -d'|' -f1)|$(tg meta | cut -d'|' -f2)|$(pend)|$([ "$(sql1 "SELECT COUNT(DISTINCT grupo) FROM cripto_aviso WHERE grupo IN ('BIP-20DEC30-CDE','TEK-19DEC30-CDE')")" = 2 ] && echo si)"
   AVP=""; TGC="$T/tg.conf"
 
   # El estado se compara con la fila de la base, no con nada local: una fila que
@@ -1147,6 +1190,129 @@ if [ "${libres:-0}" = 1 ]; then
   ejecuta '[["UPDATE sentinel_vigia SET ts=123, pendientes=1, wheel='"'"'otro-nodo'"'"' WHERE clave='"'"'btc-senales'"'"'"]]'
   corre $((AHORA5 + 4500)); r=$?
   igual "C39 ...pero la de otro equipo no la toca" "0|123,1" "$r|$(vigia)"
+
+  # ---------------- TEK (el Tech 100): de lunes a viernes, y los grupos ----------------
+  TK=TEK-19DEC30-CDE; AVT="$AV2, $TK"; PT="$AV2 $TK"
+  # sqln <consulta>: todas las filas, "a,b c,d" (sin comillas).
+  sqln(){ curl -q -s -K "$T/prueba.curlrc" -G "$RQ/db/query" --data-urlencode "q=$1" | node -e 'let s = ""; process.stdin.on("data", d => { s += d; }).on("end", () => {
+      const r = JSON.parse(s).results[0]; console.log(r.error ? "ERROR " + r.error : (r.values || []).map(v => v.join(",")).join(" ")); });'; }
+  # msge2 <enviado>: como msge, pero con una parte por grupo (BTC primero) y una
+  # linea en blanco entre partes.
+  msge2(){ node -e '
+      const [rq, env] = process.argv.slice(1);
+      fetch(rq + "/db/query?level=strong", { method: "POST", headers: { "Content-Type": "application/json", Authorization: "Basic " + Buffer.from("prueba:clave-prueba").toString("base64") },
+        body: JSON.stringify([["SELECT grupo, texto, producto FROM cripto_aviso WHERE enviado=? ORDER BY ts,grupo,marco,tipo", +env], ["SELECT fuente FROM cripto_vela LIMIT 1"]]) })
+        .then(r => r.json()).then(j => { const f = j.results[0].values || [];
+          const orden = ["BIP-20DEC30-CDE", "TEK-19DEC30-CDE"], et = { "BIP-20DEC30-CDE": "BTC", "TEK-19DEC30-CDE": "Tech 100" };
+          const partes = orden.filter(g => f.some(x => x[0] === g)).map(g => { const s = f.filter(x => x[0] === g);
+            return "📊 " + et[g] + ": señales al cierre\n" + s.map(x => "• " + x[1]).join("\n") + "\n" + (s.some(x => x[2] === "BTC-USD") ? "Spot = BTC-USD, solo donde al perpetuo le falta historia.\n" : ""); });
+          console.log(partes.join("\n") + "Lo manda " + j.results[1].values[0][0] + "."); });' "$RQ" "$1"; }
+  avg(){ node "$AQUI/avisos-comprueba.js" "$RQ" "prueba:clave-prueba" "$E" "$1" 2>&1; }
+  # conGrupo: 1 si cripto_aviso tiene la clave con grupo.
+  conGrupo(){ sql1 "SELECT COUNT(*) FROM sqlite_master WHERE name='cripto_aviso' AND sql LIKE '%grupo TEXT%' AND sql LIKE '%PRIMARY KEY (grupo, marco, ts, tipo)%'"; }
+  # El sabado siguiente, 10:00 UTC (el reloj de las pasadas solo va hacia delante).
+  d_=$(( (AHORA5 + 4800) / 86400 )); w_=$(( (d_ + 4) % 7 )); k_=$(( (6 - w_ + 7) % 7 )); [ "$k_" = 0 ] && k_=7
+  SAB=$(( (d_ + k_) * 86400 )); AHT=$((SAB + 36000))
+  est "{\"ahora\":$AHT,$CAM}"
+  ejecuta "[[\"DELETE FROM cripto_vela WHERE producto='$TK'\"],[\"DELETE FROM cripto_indicador WHERE producto='$TK'\"],[\"DELETE FROM cripto_fibonacci WHERE producto='$TK'\"]]"
+  p0=$(pet); AVP=""; PRODS="$TK"; corre $AHT; r=$?; c=$(comprueba $TK)
+  case "$r|$c" in "0|coincide"*) pasa "C40 TEK desde cero: todo coincide con la referencia de lunes a viernes ($c)" ;; *) falla "C40 TEK desde cero" "r=$r $c $(head -c 300 "$T/salida")" ;; esac
+  igual "C40 ...el fin de semana no es hueco: solo falta el festivo (19/06), y la carga completa lo detalla" "si si" \
+    "$(grep -q "^$TK: .* 1 dias faltantes en 1 tramos" "$T/salida" && echo si) $(grep -q "huecos de $TK: 2026-06-19..2026-06-19" "$T/salida" && echo si)"
+  igual "C40 ...el sabado, la semana de lunes a viernes ya esta cerrada, con 5 dias" "1,5" \
+    "$(sql1 "SELECT cerrada, dias FROM cripto_vela WHERE producto='$TK' AND marco='1w' AND ts=$((SAB - 5 * 86400))")"
+  igual "C40 ...sin ciclo de Fibonacci (nacio en junio de 2026)" "si|0" \
+    "$(grep -q "^$TK: .*sin ciclo para Fibonacci" "$T/salida" && echo si)|$(sql1 "SELECT COUNT(*) FROM cripto_fibonacci WHERE producto='$TK'")"
+  igual "C40 ...y la carga completa hace 3 peticiones (1 con velas y 2 vacias)" "3" "$(( $(pet) - p0 ))"
+  # Con BTC_LABORABLES vacio se trata como uno de todos los dias: el fin de
+  # semana pasa a ser hueco y la semana sigue abierta hasta el domingo.
+  LABP=""; corre $((AHT + 60)); r=$?; unset LABP
+  igual "C42 con BTC_LABORABLES vacio, el fin de semana es hueco y la semana sigue abierta" "0|si|0" \
+    "$r|$(grep -q "^$TK: .* dias faltantes en [2-9][0-9]* tramos" "$T/salida" && echo si)|$(sql1 "SELECT cerrada FROM cripto_vela WHERE producto='$TK' AND marco='1w' AND ts=$((SAB - 5 * 86400))")"
+  corre $((AHT + 120)); r=$?; c=$(comprueba $TK)
+  case "$r|$c" in "0|coincide"*) pasa "C42 ...y con el de por defecto, todo coincide otra vez" ;; *) falla "C42 vuelta al de por defecto" "r=$r $c" ;; esac
+  # Domingo y lunes 00:30 UTC: pasadas normales.
+  est "{\"ahora\":$((AHT + 86400)),$CAM}"; p0=$(pet); corre $((AHT + 86400)); r=$?; c=$(comprueba $TK)
+  case "$r|$c" in "0|coincide"*) pasa "C41 el domingo: pasada normal que coincide" ;; *) falla "C41 el domingo" "r=$r $c" ;; esac
+  igual "C41 ...una sola peticion, y el festivo viejo no se repite en el log (el resumen si lo cuenta)" "1|0|si" \
+    "$(( $(pet) - p0 ))|$(grep -c "huecos de $TK" "$T/salida")|$(grep -q "^$TK: .* 1 dias faltantes en 1 tramos" "$T/salida" && echo si)"
+  A_=$((SAB + 2 * 86400 + 1800)); est "{\"ahora\":$A_,$CAM}"; corre $A_; r=$?; c=$(comprueba $TK)
+  case "$r|$c" in "0|coincide"*) pasa "C41 el lunes 00:30: la vela del lunes entra a medias y coincide" ;; *) falla "C41 el lunes" "r=$r $c" ;; esac
+  igual "C41 ...con la semana nueva abierta" "0,1" "$(sql1 "SELECT cerrada, dias FROM cripto_vela WHERE producto='$TK' AND marco='1w' AND ts=$((SAB + 2 * 86400))")"
+
+  # Dos grupos, BTC y el Tech 100. En seco, una señal del TEK; en la base, una
+  # de BTC con su misma (marco, ts, tipo): con la clave de antes chocarian.
+  WED=$((SAB + 4 * 86400 + 36000)); est "{\"ahora\":$WED,$CAM}"
+  AVP="$AVT"; PRODS="$PT"; rm -rf "$T/dir/seco"; corre $WED --seco
+  kt=$(node -e 'const a = JSON.parse(require("fs").readFileSync(process.argv[1], "utf8")); const x = a.find(s => s[1] === process.argv[2]); console.log(x ? [x[2], x[3], x[4]].join(" ") : "")' "$T/dir/seco/senales.json" "$TK" 2>/dev/null)
+  set -- $kt
+  if [ $# = 3 ]; then
+    ejecuta "[[\"DELETE FROM cripto_aviso WHERE grupo='$TK' AND marco='$1' AND ts=$2 AND tipo='$3'\"],[\"INSERT OR IGNORE INTO cripto_aviso(grupo,marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES('BIP-20DEC30-CDE','$1',$2,'$3','BTC-USD',1,1,1,'choque',1,0)\"]]"
+    t0=$(tg n); corre $WED; r=$?
+    igual "C43 con los dos grupos: sale bien y la señal del TEK entra aunque BTC tenga una con su misma (marco, ts, tipo)" "0|1|1" \
+      "$r|$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE grupo='$TK' AND marco='$1' AND ts=$2 AND tipo='$3'")|$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE grupo='BIP-20DEC30-CDE' AND marco='$1' AND ts=$2 AND tipo='$3'")"
+    igual "C43 ...un solo mensaje, con una parte por grupo (BTC primero) y la del Tech 100" "1|$(msge2 $WED)|si" \
+      "$(( $(tg n) - t0 ))|$(tg txt)|$(tg txt | grep -qx '📊 Tech 100: señales al cierre' && echo si)"
+    ejecuta '[["DELETE FROM cripto_aviso WHERE texto='"'"'choque'"'"'"]]'
+    c1=$(avg "$AV2"); c2=$(avg "$TK")
+    case "$c1|$c2" in "coincide: "*"|coincide: "*) pasa "C43 ...y las de cada grupo son las de su referencia ($c1 / $c2)" ;; *) falla "C43 señales de los dos grupos contra la referencia" "$c1 / $c2" ;; esac
+  else falla "C43 el --seco no dio ninguna señal del TEK" "[$kt] $(cat "$T/salida")"; fi
+  igual "C43 ...y el estado de las señales, a bien" "$WED,0" "$(vigia)"
+
+  # Si falla un producto del TEK, BTC calcula y guarda las suyas igual.
+  THU=$((WED + 86400)); est "{\"ahora\":$THU,$CAM,\"fallaProducto\":\"$TK\"}"
+  corre $THU; r=$?; c1=$(avg "$AV2")
+  igual "C44 si falla el TEK: sale con 3, BTC calcula y guarda las suyas, y lo dice" "3|si|si" \
+    "$r|$(grep -q "señales de Tech 100: no se calculan en esta pasada porque $TK no salio bien" "$T/salida" && echo si)|$(case "$c1" in "coincide: "*) echo si ;; esac)"
+  igual "C44 ...y el estado de las señales pasa a 3 (el Wheel avisa si dura)" "$THU,3" "$(vigia)"
+  est "{\"ahora\":$THU,$CAM}"; corre $((THU + 300)); r=$?; c2=$(avg "$TK")
+  igual "C44 la siguiente: el TEK se pone al dia y el estado vuelve a bien" "0|si|$((THU + 300)),0" "$r|$(case "$c2" in "coincide: "*) echo si ;; esac)|$(vigia)"
+  i0=$(raft); corre $((THU + 600)); r=$?; i1=$(raft)
+  igual "C45 una pasada sin novedades con los tres productos y los dos grupos: 6 entradas de Raft (2 por producto)" "0|6" "$r|$((i1 - i0))"
+
+  # La semanal del TEK cierra el viernes (5 dias): sus 36 h cuentan desde ahi.
+  A=$((THU + 700))
+  bd=$(awk -v a=$A -v g=$TK 'BEGIN { split("35 37", h, " ")
+         for (k = 1; k <= 2; k++) printf "%s[\"INSERT INTO cripto_aviso(grupo,marco,ts,tipo,producto,sentido,precio,nivel,texto,creado,enviado) VALUES(?,?,?,?,?,?,?,?,?,?,?)\",\"%s\",\"1w\",%d,\"borde\",\"%s\",1,1,1,\"borde5 %s h\",%d,null]", (k > 1 ? "," : "["), g, a - 432000 - h[k] * 3600, g, h[k], a
+         print "]" }')
+  ejecuta "$bd"; t0=$(tg n); corre $A; r=$?
+  igual "C45b semanal del TEK cerrada (el viernes) hace 35 h: se manda; hace 37 h: caduca" "0|1|si|1,1" \
+    "$r|$(( $(tg n) - t0 ))|$(tg txt | grep -qx '• borde5 35 h' && echo si)|$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE tipo='borde' AND texto LIKE '% 35 h' AND enviado=$A"),$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE tipo='borde' AND texto LIKE '% 37 h' AND enviado=-1")"
+  ejecuta '[["DELETE FROM cripto_aviso WHERE tipo='"'"'borde'"'"'"]]'
+
+  # Sin la tabla y con un grupo que falla: se crea igual con los demas (si no,
+  # un grupo roto para siempre dejaria sin señales a todos).
+  ejecuta '[["DROP TABLE cripto_aviso"]]'
+  est "{\"ahora\":$THU,$CAM,\"fallaProducto\":\"$TK\"}"; t0=$(tg n); corre $((THU + 750)); r=$?; c1=$(avg "$AV2")
+  igual "C45c sin la tabla y con el TEK fallando: la crea con las de BTC (como ya enviadas), sin mandar nada, y sale con 3" "3|1|si|0|0|0" \
+    "$r|$(conGrupo)|$(case "$c1" in "coincide: "*) echo si ;; esac)|$(sql1 "SELECT COUNT(*) FROM cripto_aviso WHERE grupo<>'BIP-20DEC30-CDE' OR enviado<>0")|$(( $(tg n) - t0 ))|$(grep -c 'no pude' "$T/salida")"
+  est "{\"ahora\":$THU,$CAM}"; corre $((THU + 800)); r=$?; c2=$(avg "$TK")
+  igual "C45c ...y cuando el TEK vuelve, sus señales entran" "0|si" "$r|$(case "$c2" in "coincide: "*) echo si ;; esac)"
+
+  # La tabla de antes de los grupos (clave marco, ts, tipo) se migra sola.
+  F_=$((THU + 900)); est "{\"ahora\":$F_,$CAM}"
+  ejecuta "[[\"DROP TABLE cripto_aviso\"],[\"CREATE TABLE cripto_aviso (marco TEXT NOT NULL, ts INTEGER NOT NULL, tipo TEXT NOT NULL, producto TEXT NOT NULL, sentido INTEGER NOT NULL, precio REAL NOT NULL, nivel REAL, texto TEXT NOT NULL, creado INTEGER NOT NULL, enviado INTEGER, PRIMARY KEY (marco, ts, tipo)) WITHOUT ROWID\"],[\"INSERT INTO cripto_aviso VALUES ('1d', 100, 'ema100', 'BIP-20DEC30-CDE', 1, 1, 1, 'vieja 1', 1, 123)\"],[\"INSERT INTO cripto_aviso VALUES ('1w', 200, 'fib', 'BTC-USD', 1, 1, 1, 'vieja 2', 1, 5)\"],[\"INSERT INTO cripto_aviso VALUES ('1d', 300, 'ha', 'OTRO-X', 1, 1, 1, 'vieja 3', 1, -1)\"]]"
+  corre $F_ --seco; r=$?
+  igual "C46 con --seco, una tabla de antes de los grupos no se toca (y lo dice)" "0|si|0|3" \
+    "$r|$(grep -q 'es de antes de los grupos' "$T/salida" && echo si)|$(conGrupo)|$(sql1 "SELECT COUNT(*) FROM cripto_aviso")"
+  ejecuta '[["CREATE VIEW cripto_aviso_nueva AS SELECT 1"]]'
+  t0=$(tg n); corre $((F_ + 60)); r=$?
+  igual "C46 si la migracion falla: sale con 1, la tabla sigue como estaba, no se manda nada y el estado pasa a 1" "1|si|0|3|0|$((F_ + 60)),1" \
+    "$r|$(grep -q 'no pude pasar la tabla cripto_aviso a la clave con grupo' "$T/salida" && echo si)|$(conGrupo)|$(sql1 "SELECT COUNT(*) FROM cripto_aviso")|$(( $(tg n) - t0 ))|$(vigia)"
+  ejecuta '[["DROP VIEW cripto_aviso_nueva"]]'
+  corre $((F_ + 120)); r=$?
+  igual "C46 la siguiente la migra, con las 3 señales viejas: cada una con el grupo de su producto y su enviado" \
+    "0|si|1|BIP-20DEC30-CDE,123 BIP-20DEC30-CDE,5 OTRO-X,-1|$((F_ + 120)),0" \
+    "$r|$(grep -q 'migrada la tabla cripto_aviso a la clave (grupo, marco, ts, tipo): 3 señales' "$T/salida" && echo si)|$(conGrupo)|$(sqln "SELECT grupo, enviado FROM cripto_aviso WHERE ts < 1000 ORDER BY ts")|$(vigia)"
+  c1=$(avg "$AV2"); c2=$(avg "$TK")
+  case "$c1|$c2" in "coincide: "*"|coincide: "*) pasa "C46 ...y despues guarda las de los dos grupos, las de la referencia ($c1 / $c2)" ;; *) falla "C46 señales tras migrar" "$c1 / $c2" ;; esac
+  corre $((F_ + 180)); r=$?
+  igual "C46 ...y no vuelve a migrar" "0|0" "$r|$(grep -c 'migrada la tabla' "$T/salida")"
+
+  # Configuracion de grupos que no vale: un producto en dos grupos.
+  r1=$(AVP="BTC-USD, BTC-USD"; PRODS=BTC-USD; corre $((F_ + 240)); echo $?)
+  igual "C47 un producto en dos grupos: 64, y lo dice en el log" "64|si" "$r1|$(grep -q 'ERROR BTC_AVISOS: BTC-USD esta en dos grupos' "$T/dir/velas.log" && echo si)"
+  AVP=""; PRODS="$AV2"
   unset PRODS
   fi
 fi

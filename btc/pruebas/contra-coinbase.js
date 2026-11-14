@@ -35,7 +35,10 @@ const H = { 'User-Agent': 'sentinel-btc-velas/1.0' };
 const DIA = 86400;
 const SPOT = producto === 'BTC-USD';
 // Primer dia de cada producto en Coinbase.
-const INICIO_CB = { 'BTC-USD': 1437350400, 'BIP-20DEC30-CDE': 1752796800 }[producto];
+const INICIO_CB = { 'BTC-USD': 1437350400, 'BIP-20DEC30-CDE': 1752796800, 'TEK-19DEC30-CDE': 1781481600 }[producto];
+// Los que solo cotizan de lunes a viernes (BTC_LABORABLES del script): sus semanas
+// completas tienen 5 dias, no 7.
+const DIAS_SEM = ['TEK-19DEC30-CDE'].includes(producto) ? 5 : 7;
 const ADV = 'https://api.coinbase.com/api/v3/brokerage/market/products/' + producto + '/candles';
 const FUENTE = SPOT ? 'la API Exchange' : 'las velas horarias juntadas';
 const espera = ms => new Promise(r => setTimeout(r, ms));
@@ -188,10 +191,10 @@ const igualOHLC = (a, b) => ['o', 'h', 'l', 'c'].every(k => Math.abs(a[k] - b[k]
     if (!e) { wFalta++; continue; }
     if (igualOHLC(x, e)) wOk++; else { wDis++; if (owEj.length < 5) owEj.push(`${f(t)} nuestra ${x.o}/${x.h}/${x.l}/${x.c} ONE_WEEK ${e.o}/${e.h}/${e.l}/${e.c}`); }
   }
-  const incompletas = [...w.values()].filter(x => x.cerrada && x.dias !== 7).map(x => `${f(x.t)} (${x.dias} dias)`);
+  const incompletas = [...w.values()].filter(x => x.cerrada && x.dias !== DIAS_SEM).map(x => `${f(x.t)} (${x.dias} dias)`);
   console.log(`semanales cerradas: ${wOk} iguales a ONE_WEEK; ${wDis} distintas (informativo); ${wFalta} sin ONE_WEEK`);
   owEj.forEach(s => console.log('  distinta: ' + s));
-  console.log('semanas cerradas con menos de 7 dias: ' + (incompletas.length ? incompletas.join(', ') : 'ninguna'));
+  console.log(`semanas cerradas con menos de ${DIAS_SEM} dias: ` + (incompletas.length ? incompletas.join(', ') : 'ninguna'));
   console.log(fallo ? 'RESULTADO: NO cuadra' : 'RESULTADO: cuadra');
   process.exit(fallo);
 })().catch(e => { console.log('ERROR ' + e.message); process.exit(2); });

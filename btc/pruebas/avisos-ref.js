@@ -51,7 +51,7 @@ function estado(f, x, m, vs, k, cand) {
 const miles = x => Math.round(x).toLocaleString('de-DE');
 const pct = n => { const s = (Math.round(n * 1000) / 10).toFixed(1).replace(/\.0$/, ''); return s.replace('.', ',') + ' %'; };
 const fecha = ts => { const d = new Date(ts * 1000).toISOString(); return d.slice(8, 10) + '/' + d.slice(5, 7); };
-const nombre = id => (id.startsWith('BIP-') ? 'Perpetuo' : id === 'BTC-USD' ? 'Spot' : id);
+const nombre = id => (id.startsWith('BIP-') ? 'Perpetuo' : id === 'BTC-USD' ? 'Spot' : id.startsWith('TEK-') ? 'Tech 100' : id);
 const cab = (id, m, ts) => `${nombre(id)}, ${m === '1d' ? 'diaria' : 'semanal'} del ${fecha(ts)}: `;
 const flecha = s => (s > 0 ? '📈 ' : '📉 ');
 

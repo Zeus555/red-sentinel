@@ -505,6 +505,16 @@ fi
 #     nodo);
 #   - escribe, pero no hay vela de hoy pasado ese plazo tras medianoche UTC:
 #     Coinbase no la trae (producto parado, vencido o renombrado).
+# Los productos que solo cotizan de lunes a viernes (TEK-19DEC30-CDE, el Tech
+# 100: sin velas UTC en sabado ni domingo, ni en los festivos de la bolsa de
+# EE. UU.) se reconocen por sus datos: al menos 10 velas en los ultimos 28 dias
+# y ninguna en sabado o domingo. En ellos, la vela que falta se cuenta en dias
+# HABILES (lunes a viernes UTC), y un dia habil solo cuenta cuando ya pasaron
+# 6 h de el mas el plazo (en invierno el lunes abre a las 01:00 UTC y a
+# medianoche apenas hay operaciones). Se avisa si faltan 2 o mas seguidos: un
+# festivo entre semana no avisa; dos dias habiles sin vela, si (a partir de las
+# 06:15 UTC del segundo). Los demas (24/7, o con pocos datos, o parados) siguen
+# la regla de arriba.
 # Un producto escrito por ultima vez mas de una semana antes que el mas al dia
 # se da por retirado (se quito de BTC_PRODUCTOS) y deja de mirarse; si se paran
 # TODOS, se siguen mirando, con su recordatorio, aunque pasen semanas (y uno
@@ -519,17 +529,26 @@ fi
 # estado.
 BVMAX=$(( $(entero "${BTC_DATOS_MAX_MIN:-15}" 15) * 60 ))
 if [ -n "${RQLITE:-}" ] && [ "$RZ" = 200 ] && grep -q '^T|fresca' "$OBS"; then
-  VQ="SELECT producto, MAX(actualizado), MAX(ts) FROM cripto_vela WHERE marco='1d' GROUP BY producto"
+  # Columnas 4 y 5: velas de los ultimos 28 dias y, de ellas, las de sabado o
+  # domingo UTC ((ts/86400 + 4) % 7: 0 domingo, 6 sabado; el 01/01/1970 fue jueves).
+  BV28=$((AHORA - 2419200))
+  VQ="SELECT producto, MAX(actualizado), MAX(ts), SUM(CASE WHEN ts>=$BV28 THEN 1 ELSE 0 END), SUM(CASE WHEN ts>=$BV28 AND (ts/86400+4)%7 IN (0,6) THEN 1 ELSE 0 END) FROM cripto_vela WHERE marco='1d' GROUP BY producto"
   rqpide /db/query -s -m 12 -G "$RQLITE/db/query" --data-urlencode "q=$VQ" --data-urlencode "level=none"
   case "$RQ_CUERPO" in *'"values"'*)
     printf '%s' "$RQ_CUERPO" | sed 's/.*"values":\[//; s/\]}.*//' | sed 's/\],\[/\n/g' | tr -d '[]" ' \
     | "$AWK" -F, -v now="$AHORA" -v max="$BVMAX" '
       function dur(s){ if (s<3600) return int(s/60) " min"; if (s<86400) return int(s/3600) " h " int((s%3600)/60) " min"; return int(s/86400) " d " int((s%86400)/3600) " h" }
       function fecha(t,  z,era,doe,yoe,doy,mp,d,m){ z=int(t/86400)+719468; era=int(z/146097); doe=z-era*146097; yoe=int((doe-int(doe/1460)+int(doe/36524)-int(doe/146096))/365); doy=doe-(365*yoe+int(yoe/4)-int(yoe/100)); mp=int((5*doy+2)/153); d=doy-int((153*mp+2)/5)+1; m=(mp<10)?mp+3:mp-9; return sprintf("%02d/%02d",d,m) }
-      $1 ~ /^[A-Z0-9-]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ { n++; P[n]=$1; A[n]=$2; V[n]=$3; if (fr=="" || now-$2 < fr) fr=now-$2 }
+      $1 ~ /^[A-Z0-9-]+$/ && $2 ~ /^[0-9]+$/ && $3 ~ /^[0-9]+$/ { n++; P[n]=$1; A[n]=$2; V[n]=$3; R[n]=($4 ~ /^[0-9]+$/) ? $4+0 : 0; F[n]=($5 ~ /^[0-9]+$/) ? $5+0 : -1; if (fr=="" || now-$2 < fr) fr=now-$2 }
       END { for (i=1;i<=n;i++) { e=now-A[i]
           if (e - fr > 604800) continue          # retirado: una semana mas viejo que el mas al dia
           if (e > max) printf "O|bv:%s|%s|mal|sin escribir desde hace %s|0\n", P[i], P[i], dur(e)
+          else if (R[i] >= 10 && F[i] == 0) {    # de lunes a viernes: dias habiles que faltan
+            dv = int(V[i] / 86400); k = 0; pf = -1
+            for (d = dv + 1; d <= dv + 400 && d * 86400 + 21600 + max <= now; d++) {
+              w = (d + 4) % 7; if (w != 0 && w != 6) { k++; if (pf < 0) pf = d } }
+            if (k >= 2) printf "O|bv:%s|%s|mal|escribe, pero Coinbase no trae la vela del %s (UTC); la última es del %s|0\n", P[i], P[i], fecha(pf * 86400), fecha(V[i])
+            else printf "O|bv:%s|%s|ok||0\n", P[i], P[i] }
           else if (now - V[i] > 86400 + max) printf "O|bv:%s|%s|mal|escribe, pero Coinbase no trae la vela del %s (UTC); la última es del %s|0\n", P[i], P[i], fecha(V[i] + 86400), fecha(V[i])
           else printf "O|bv:%s|%s|ok||0\n", P[i], P[i] } }' >> "$OBS" ;;
   esac
